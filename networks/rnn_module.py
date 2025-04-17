@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 class GRUModule(nn.Module):
@@ -53,26 +52,39 @@ class GRUModule(nn.Module):
             rnn_states: (num_layers, B, hidden_dim)
             masks: (T, B, 1) or (B, 1) for single step
         """
+        # Assert input shapes
         if x.dim() == 2:
+            # Single step case: (B, input_dim)
+            assert x.size(1) == self.input_dim, f"Expected input dimension {self.input_dim}, got {x.size(1)}"
             x = x.view(1, -1, self.input_dim) # (1, B, input_dim)
+        else:
+            # Multi-step case: (T, B, input_dim)
+            assert x.dim() == 3, f"Expected 3D input (T, B, input_dim), got {x.dim()}D"
+            assert x.size(2) == self.input_dim, f"Expected input dimension {self.input_dim}, got {x.size(2)}"
+
+        # Assert RNN states shape
+        assert rnn_states.size(0) == self.num_layers, f"Expected {self.num_layers} RNN layers, got {rnn_states.size(0)}"
+        assert rnn_states.size(2) == self.hidden_dim, f"Expected hidden dimension {self.hidden_dim}, got {rnn_states.size(2)}"
+
+        # Assert batch sizes match
+        batch_size = x.size(1)
+        assert rnn_states.size(1) == batch_size, f"Batch size mismatch: x has {batch_size}, rnn_states has {rnn_states.size(1)}"
 
         # Handle single timestep (evaluation/rollout) case
         is_single_step = x.size(0) == 1
 
         if is_single_step:
             # Apply mask to RNN states
-            rnn_states = rnn_states * masks.view(1, -1, 1) # (num_layers, batch_size, hidden_size)
-            x, rnn_states = self.gru(x, rnn_states)
+            temp_states = (rnn_states * masks.view(1, -1, 1)).contiguous() # (num_layers, batch_size, hidden_size)
+            x, rnn_states = self.gru(x, temp_states)
             x = x.squeeze(0) # (B, hidden_size)
-            rnn_states = rnn_states.squeeze(0) if self.num_layers == 1 else rnn_states
 
             return self.gru_layer_norm(x), rnn_states
 
-        # Handle Mult-step case (training)
+        # Handle Multi-step case (training)
         seq_len, batch_size = x.shape[:2]
-
         # Find sequences of zeros in masks for efficient processing
-        masks = masks.view(seq_len, batch_size) # (T, B, 1) -> (T, B)
+        masks = masks.view(seq_len, batch_size).contiguous() # (T, B, 1) -> (T, B)
 
         # Using trick from iKostrikov to process sequences in chunks.
         #
@@ -94,16 +106,24 @@ class GRUModule(nn.Module):
             start_idx = has_zeros[i]
             end_idx = has_zeros[i + 1]
 
-            # Apply mask to current RNN states
-            rnn_states = (rnn_states * masks[start_idx].view(1, -1, 1))
+            # Apply mask to current RNN states (num_layers, batch, hidden_dim)
+            temp_states = (rnn_states * masks[start_idx].view(1, -1, 1)).contiguous()
 
             # Process current sequence
-            out, rnn_states = self.gru(x[start_idx:end_idx], rnn_states)
+            out, rnn_states = self.gru(x[start_idx:end_idx], temp_states)
             outputs.append(out)
 
         # Combine outputs and apply layer norm
         x = torch.cat(outputs, dim=0) # (T, B, hidden_dim)
         x = self.gru_layer_norm(x)
+
+        # Assert output shapes
+        # assert x.size(0) == seq_len, f"Expected output sequence length {seq_len}, got {x.size(0)}"
+        # assert x.size(1) == batch_size, f"Expected output batch size {batch_size}, got {x.size(1)}"
+        # assert x.size(2) == self.hidden_dim, f"Expected output hidden dim {self.hidden_dim}, got {x.size(2)}"
+        # assert rnn_states.size(0) == self.num_layers, f"Expected output RNN layers {self.num_layers}, got {rnn_states.size(0)}"
+        # assert rnn_states.size(1) == batch_size, f"Expected output RNN batch size {batch_size}, got {rnn_states.size(1)}"
+        # assert rnn_states.size(2) == self.hidden_dim, f"Expected output RNN hidden dim {self.hidden_dim}, got {rnn_states.size(2)}"
 
         return x, rnn_states
 

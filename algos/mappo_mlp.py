@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from networks.mlp_nets import Actor_MLP, Critic_MLP
 from utils.scheduler import LinearScheduler
@@ -35,15 +36,13 @@ class MAPPOAgent:
         self._init_hyperparameters()
         self._init_networks(obs_dim, state_dim, action_dim)
 
-        if self.use_value_normalization:
+        if self.use_value_norm:
             self.value_normalizer = create_value_normalizer(
                 normalizer_type=self.args.value_norm_type,
                 device=device
             )
-
-        # Setup loss functions
-        # if self.use_huber_loss:
-        #     self.huber_loss = nn.HuberLoss(reduction="none", delta=args.huber_delta)
+        else:
+            self.value_normalizer = None
 
     def _validate_inputs(self, args, obs_dim: int, state_dim: int, action_dim: int) -> None:
         """Validate input parameters."""
@@ -64,8 +63,9 @@ class MAPPOAgent:
         self.max_grad_norm = self.args.max_grad_norm
         self.use_max_grad_norm = self.args.use_max_grad_norm
         self.use_clipped_value_loss = self.args.use_clipped_value_loss
-        self.use_value_normalization = self.args.use_value_norm
-        # self.target_kl = self.args.target_kl
+        self.use_value_norm = self.args.use_value_norm
+        self.use_huber_loss = self.args.use_huber_loss
+        self.huber_delta = self.args.huber_delta
 
         # Training parameters
         self.lr = self.args.lr
@@ -150,13 +150,14 @@ class MAPPOAgent:
 
         return actions, action_log_probs
 
-    def get_values(self, state, obs):
+    def get_values(self, state, obs, active_masks):
         """
         Get values from the critic network.
 
         Args:
             state (np.ndarray): State tensor
             obs (np.ndarray): Observation tensor
+            active_masks (np.ndarray): Active masks tensor
 
         Returns:
             values (np.ndarray): Values
@@ -166,6 +167,8 @@ class MAPPOAgent:
             state = torch.tensor(state, dtype=torch.float32).to(self.device) # (n_state)
             state = state.unsqueeze(0) # (1, n_state)
             state = state.repeat(self.args.n_agents, 1) # (n_agents, n_state)
+            active_masks = torch.tensor(active_masks, dtype=torch.float32).to(self.device) # (n_agents,)
+            state = state * active_masks.unsqueeze(1) # (n_agents, n_state) # Mask out inactive agents
             obs = torch.tensor(obs, dtype=torch.float32).to(self.device) #(n_agents, n_obs)
 
             critic_input = torch.cat((state, obs), dim=-1)
@@ -175,15 +178,16 @@ class MAPPOAgent:
 
         return values
 
-    def evaluate_actions(self, state, obs, actions, available_actions):
+    def evaluate_actions(self, state, obs, actions, available_actions, active_masks):
         """
         Evaluate actions for training.
 
         Args:
             state (torch.Tensor): State tensor #(batch_size, n_state)
             obs (torch.Tensor): Observation tensor #(batch_size, n_agents, n_obs)
-            actions (torch.Tensor): Actions tensor #(batch_size, n_agents, )
+            actions (torch.Tensor): Actions tensor #(batch_size, n_agents, 1)
             available_actions (torch.Tensor): Available actions tensor #(batch_size, n_agents, n_actions)
+            active_masks (torch.Tensor): Active masks tensor #(batch_size, n_agents, 1)
 
         Returns:
             tuple: (values, action_log_probs, dist_entropy)
@@ -191,6 +195,7 @@ class MAPPOAgent:
         # Convert numpy arrays to torch tensors and move to device
         state = state.unsqueeze(1) # (batch_size, 1, n_state)
         state = state.repeat(1, self.args.n_agents, 1) # (batch_size, n_agents, n_state)
+        state = state * active_masks # (batch_size, n_agents, n_state) # Mask out inactive agents
         critic_input = torch.cat((state, obs), dim=-1) # (batch_size, n_agents, n_state + n_obs)
 
 
@@ -204,13 +209,14 @@ class MAPPOAgent:
         Compute value function loss with normalization.
 
         Args:
-            values: Current value predictions
-            value_preds_batch: Old value predictions
-            return_batch: Return targets
+            values: Current value predictions (batch_size, n_agents, 1)
+            value_preds_batch: Old value predictions (batch_size, n_agents, 1)
+            return_batch: Return targets (batch_size, n_agents, 1)
         """
-        if self.use_value_normalization:
-            # Normalize returns for loss computation
-            returns = self.value_normalizer.normalize(returns_batch)
+        if self.use_value_norm:
+            returns = self.value_normalizer.normalize(returns_batch, update=True)
+            values = self.value_normalizer.normalize(values, update=False)
+            value_preds_batch = self.value_normalizer.normalize(value_preds_batch, update=False)
         else:
             returns = returns_batch
 
@@ -220,11 +226,20 @@ class MAPPOAgent:
                 -self.clip_param,
                 self.clip_param
             )
-            value_losses = (values - returns).pow(2)
-            value_losses_clipped = (value_pred_clipped - returns).pow(2)
-            value_loss = 0.5 * torch.max(value_losses, value_losses_clipped).mean()
+            if self.use_huber_loss:
+                # Compute Huber loss for clipped and unclipped predictions
+                value_losses = F.huber_loss(values, returns, delta=self.huber_delta, reduction='none')
+                value_losses_clipped = F.huber_loss(value_pred_clipped, returns, delta=self.huber_delta, reduction='none')
+                value_loss = torch.max(value_losses, value_losses_clipped).mean()
+            else:
+                value_losses = (values - returns).pow(2)
+                value_losses_clipped = (value_pred_clipped - returns).pow(2)
+                value_loss = 0.5 * torch.max(value_losses, value_losses_clipped).mean()
         else:
-            value_loss = 0.5 * (values - returns).pow(2).mean()
+            if self.use_huber_loss:
+                value_loss = F.huber_loss(values, returns, delta=self.huber_delta, reduction='mean')
+            else:
+                value_loss = 0.5 * (values - returns).pow(2).mean()
 
         return value_loss
 
@@ -240,12 +255,12 @@ class MAPPOAgent:
         """
         metrics = {}
         # Extract data from mini-batch
-        (obs_batch, global_state_batch, actions_batch, values_batch, returns_batch, masks_batch,
+        (obs_batch, global_state_batch, actions_batch, values_batch, returns_batch, masks_batch, active_masks_batch,
             old_action_log_probs_batch, advantages_batch, available_actions_batch) = mini_batch
 
         # Evaluate actions
         values, action_log_probs, dist_entropy = self.evaluate_actions(
-            global_state_batch, obs_batch, actions_batch, available_actions_batch)
+            global_state_batch, obs_batch, actions_batch, available_actions_batch, active_masks_batch)
 
         #  Calculate PPO ratio and KL divergence
         ratio = torch.exp(action_log_probs - old_action_log_probs_batch)

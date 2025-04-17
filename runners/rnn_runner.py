@@ -3,10 +3,10 @@ import time
 import numpy as np
 import torch
 from buffers.rnn_buffer import RecurrentRolloutStorage
-from smac.env import StarCraft2Env
+from envs import create_env
 from algos.mappo_rnn import RMAPPOAgent
 from utils.logger import Logger
-from utils.reward_normalization import EfficientStandardNormalizer, FastRewardNormalizer
+from utils.reward_normalization import EfficientStandardNormalizer, EMANormalizer
 # import wandb
 
 
@@ -28,9 +28,9 @@ class RecurrentRunner:
 
         self.device = torch.device("cuda" if args.cuda and torch.cuda.is_available() else "cpu")
 
-        # Think later about the replay dir and replay prefix, which apperently can be used to save the replay
-        self.env = StarCraft2Env(map_name=args.map_name, difficulty=args.difficulty)
-        self.evaluate_env = StarCraft2Env(map_name=args.map_name,  difficulty=args.difficulty)
+        # Create training and evaluation environments using the factory function
+        self.env = create_env(args, is_eval=False)
+        self.evaluate_env = create_env(args, is_eval=True)
 
         # Get environment info
         env_info = self.env.get_env_info()
@@ -63,21 +63,23 @@ class RecurrentRunner:
             args.action_dim,
             args.state_dim,
             args.hidden_size,
-            args.rnn_layers)
+            args.rnn_layers,
+            args.use_value_norm)
 
         # Normalize rewards
         if args.use_reward_norm:
             if args.reward_norm_type == "ema":
-                self.reward_norm = FastRewardNormalizer()
+                self.reward_norm = EMANormalizer()
             else:
                 self.reward_norm = EfficientStandardNormalizer()
 
         # Initialize logger
         run_name = (
-            f"alr{args.lr}_nsteps{args.n_steps}_"
+            f"lr{args.lr}_nsteps{args.n_steps}_"
             f"minibatch{args.num_mini_batch}_epochs{args.ppo_epoch}_"
             f"gamma{args.gamma}_gae{args.gae_lambda}_"
-            f"clip{args.clip_param}__{int(time.time())}"
+            f"clip{args.clip_param}_dmask{args.use_death_masking}_aid{args.use_agent_id}_"
+            f"as{args.use_agent_specific_state}_{int(time.time())}"
         )
 
         run_name = "".join(run_name)
@@ -88,6 +90,9 @@ class RecurrentRunner:
             "env_name": env_name,
             "map_name": args.map_name,
             "difficulty": args.difficulty,
+            "use_agent_id": args.use_agent_id,
+            "death_masking": args.use_death_masking,
+            "use_agent_specific_state": args.use_agent_specific_state,
             "lr": args.lr,
             "optimizer_eps": args.optimizer_eps,
             "use_linear_lr_decay": args.use_linear_lr_decay,
@@ -98,12 +103,15 @@ class RecurrentRunner:
             "hidden_size": args.hidden_size,
             "rnn_layers": args.rnn_layers,
             "n_steps": args.n_steps,
+            "data_chunk_length": args.data_chunk_length,
             "num_mini_batch": args.num_mini_batch,
             "ppo_epoch": args.ppo_epoch,
             "gamma": args.gamma,
             "gae_lambda": args.gae_lambda,
             "clip_param": args.clip_param,
             "use_clipped_value_loss": args.use_clipped_value_loss,
+            "use_huber_loss": args.use_huber_loss,
+            "huber_delta": args.huber_delta,
             "entropy_coef": args.entropy_coef,
             "use_gae": args.use_gae,
             "use_proper_time_limits": args.use_proper_time_limits,
@@ -167,6 +175,11 @@ class RecurrentRunner:
 
             # Reset buffer for next collection
             self.buffer.after_update()
+        
+        # Final evaluation
+        if self.args.use_eval:
+            print(f"Final evaluation at {self.total_steps}/{self.args.max_steps}")
+            self.evaluate(self.args.eval_episodes)
 
         # Close environments
         self.env.close()
@@ -200,6 +213,7 @@ class RecurrentRunner:
         actor_rnn_states = self.buffer.actor_rnn_states[0] # (num_layers, n_agents, hidden_size)
         critic_rnn_states = self.buffer.critic_rnn_states[0] # (num_layers, n_agents, hidden_size)
         masks = self.buffer.masks[0] # (n_agents, 1)
+        active_masks = self.buffer.active_masks[0] # (n_agents, 1)
 
         # Rollout steps
         for step in range(self.args.n_steps):
@@ -212,10 +226,11 @@ class RecurrentRunner:
                 deterministic=False)
 
             # Get values from critic
-            values, critic_rnn_states = self.agent.get_values(state, obs, critic_rnn_states, masks)
+            values, critic_rnn_states = self.agent.get_values(state, obs, critic_rnn_states, masks, active_masks)
 
             # Execute actions
-            reward, done, infos = self.env.step(actions)
+            reward, dones, infos = self.env.step(actions)
+            done = np.all(dones)
 
             # Update episode counters
             self.episode_length += 1
@@ -231,6 +246,7 @@ class RecurrentRunner:
                 latest_stats = self.env.get_stats()
                 episode_outcome = self._check_episode_outcome(latest_stats)
                 is_truncated = episode_outcome == "truncated"
+                active_masks = np.ones_like(active_masks)
 
                 # Update tracking stats
                 self.game_stats.update(latest_stats)
@@ -254,13 +270,9 @@ class RecurrentRunner:
                 self.episode_rewards = 0
                 self.episode_length = 0
 
-                # reset reward normalizer
-                if self.args.use_reward_norm:
-                    self.reward_norm.reset()
-                    # Also reset the returns tracking
-
             else:
                 is_truncated = False
+                active_masks = np.array(1-dones).reshape(-1, 1)
 
             obs, state = np.array(self.env.get_obs()), np.array(self.env.get_state())
             avail_actions = np.array(self.env.get_avail_actions()) # (n_agents, n_actions)
@@ -275,6 +287,7 @@ class RecurrentRunner:
                 values=values, #(n_agents, 1)
                 rewards=np.array([reward]).repeat(self.args.n_agents).reshape(-1, 1) , #(n_agents, 1)
                 masks=masks, #(n_agents, 1)
+                active_masks=active_masks, #(n_agents, 1)
                 truncates=np.array([is_truncated]).repeat(self.args.n_agents).reshape(-1, 1), #(n_agents, 1)
                 available_actions=avail_actions, # (n_agents, n_actions)
                 actor_rnn_states=actor_rnn_states, # (num_layers, n_agents, hidden_size)
@@ -290,9 +303,14 @@ class RecurrentRunner:
         next_value, _ = self.agent.get_values(self.buffer.global_state[-1],
             self.buffer.obs[-1],
             self.buffer.critic_rnn_states[-1],
-            self.buffer.masks[-1])
+            self.buffer.masks[-1],
+            self.buffer.active_masks[-1])
 
-        self.buffer.compute_returns_and_advantages(next_value, self.args.gamma, self.args.gae_lambda)
+        self.buffer.compute_returns_and_advantages(
+            next_value, 
+            self.args.gamma, 
+            self.args.gae_lambda,
+            self.agent.value_normalizer)
 
     def evaluate(self, num_episodes=10):
         """
@@ -339,12 +357,12 @@ class RecurrentRunner:
                     deterministic=True)
 
                 # Execute actions
-                reward, done, infos = self.evaluate_env.step(actions)
+                reward, dones, infos = self.evaluate_env.step(actions)
 
                 # Update episode rewards
                 episode_reward += reward
                 episode_length += 1
-                episode_done = done
+                episode_done =  np.all(dones)
 
 
             # Track win rate

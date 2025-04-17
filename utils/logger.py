@@ -83,6 +83,12 @@ class Logger:
         with open(os.path.join(self.dir_name, "cmd.txt"), "w") as f:
             f.write(cmd)
     
+    def log_training(self, data: dict, print_to_stdout: bool = False):
+        """Log training metrics to TensorBoard and optionally to CSV."""
+        for key, val in data.items():
+            self.add_scalar(key, val, self.current_env_step)
+        if print_to_stdout: self.log_stdout()
+
     def add_scalar(self, key: str, val: float, step: int, smoothing: bool = True):
         """
         Log a scalar value to TensorBoard and optionally to CSV.

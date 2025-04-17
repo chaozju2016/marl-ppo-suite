@@ -20,8 +20,8 @@ class RolloutStorage:
         """
         self.n_steps = n_steps
         self.n_agents = n_agents
-        self.device = torch.device(device)
-        
+        self.device = torch.device(device)   
+
         # Current position in the buffer
         self.step = 0
         # (obs_0, state_0) → action_0 / action_log_prob_0 → (reward_0, obs_1, state_1, mask_1, trunc_1)
@@ -35,6 +35,7 @@ class RolloutStorage:
         self.action_log_probs = np.zeros((n_steps, n_agents), dtype=np.float32)
         self.values = np.zeros((n_steps + 1, n_agents), dtype=np.float32)
         self.masks = np.ones((n_steps + 1, n_agents), dtype=np.float32) # 0 if episode done, 1 otherwise
+        self.active_masks = np.ones((n_steps + 1, n_agents), dtype=np.float32) # 0 if agent dead, 1 otherwise
         self.truncated = np.zeros((n_steps + 1, n_agents), dtype=np.bool_) # 1 if episode truncated, 0 otherwise
         self.available_actions = np.zeros((n_steps+1, n_agents, action_dim), dtype=np.bool_)
         
@@ -47,7 +48,7 @@ class RolloutStorage:
         
     def insert(self, obs, global_state, actions, 
         action_log_probs, values, rewards, 
-        masks, truncates, available_actions):
+        masks, truncates, available_actions, active_masks=None):
         """
         Insert a new transition into the buffer.
         
@@ -62,6 +63,7 @@ class RolloutStorage:
             truncates: Boolean array indicating if episode was truncated (e.g., due to time limit) 
                       rather than terminated [n_agents]
             available_actions: Available actions mask [n_agents, n_actions]
+            active_masks: Agent active masks [n_agents], 0 if agent dead, 1 otherwise
         """
         self.obs[self.step + 1] = obs.copy()
         self.global_state[self.step + 1] = global_state.copy()
@@ -74,9 +76,16 @@ class RolloutStorage:
         self.truncated[self.step + 1] = truncates.copy()
         self.available_actions[self.step + 1] = available_actions.copy()
         
+        if active_masks is not None:
+            self.active_masks[self.step + 1] = active_masks.copy()
+
         self.step += 1
         
-    def compute_returns_and_advantages(self, next_values, gamma=0.99, lambda_=0.95, use_gae=True):
+    def compute_returns_and_advantages(self, 
+                                       next_values, 
+                                       gamma=0.99, 
+                                       lambda_=0.95, 
+                                       use_gae=True):
         """
         Compute returns and advantages using GAE (Generalized Advantage Estimation).
         Properly handles truncated episodes by incorporating next state values.
@@ -97,6 +106,7 @@ class RolloutStorage:
         if use_gae:
             # GAE advantage computation with vectorized operations for better performance
             gae = 0
+
             for step in reversed(range(self.n_steps)):       
                 # For truncated episodes, we adjust rewards directly
                 adjusted_rewards = self.rewards[step].copy() # [n_agents]
@@ -118,13 +128,13 @@ class RolloutStorage:
                 gae = delta + gamma * lambda_ * self.masks[step + 1] * gae # [n_agents]
                 advantages[step] = gae # [n_agents]
                 
-            # Compute returns as advantages + values
+            # Compute returns as advantages + self.values
             returns[:-1] = advantages + self.values[:-1] # [n_agents]
-            returns[-1] = next_values # [n_agents]
+            returns[-1] = self.values[-1] # [n_agents]
             
         else:
             # N-step returns without GAE (more efficient calculation)
-            returns[-1] = next_values
+            returns[-1] = self.values[-1]
             for step in reversed(range(self.n_steps)):
                 # Adjust rewards for truncated episodes
                 adjusted_rewards = self.rewards[step].copy()
@@ -158,6 +168,7 @@ class RolloutStorage:
         self.obs[0] = self.obs[-1].copy()
         self.global_state[0] = self.global_state[-1].copy()    
         self.masks[0] = self.masks[-1].copy()
+        self.active_masks[0] = self.active_masks[-1].copy()
         self.truncated[0] = self.truncated[-1].copy()
         self.available_actions[0] = self.available_actions[-1].copy()
 
@@ -189,6 +200,7 @@ class RolloutStorage:
         values_batch = self.values[:-1].reshape(-1, self.n_agents, 1) # Add explicit final dimension
         returns_batch = self.returns[:-1].reshape(-1, self.n_agents, 1)# Add explicit final dimension
         masks_batch = self.masks[:-1].reshape(-1, self.n_agents, 1) # Add explicit final dimension
+        active_masks_batch = self.active_masks[:-1].reshape(-1, self.n_agents, 1) # Add explicit final dimension
         old_action_log_probs_batch = self.action_log_probs.reshape(-1, self.n_agents, 1)
         advantages_batch = self.advantages.reshape(-1, self.n_agents, 1) # Add explicit final dimension
         available_actions_batch = self.available_actions[:-1].reshape(-1, self.n_agents, 
@@ -214,6 +226,7 @@ class RolloutStorage:
                 torch.tensor(values_batch[batch_inds_subset], dtype=torch.float32).to(self.device),
                 torch.tensor(returns_batch[batch_inds_subset], dtype=torch.float32).to(self.device),
                 torch.tensor(masks_batch[batch_inds_subset], dtype=torch.float32).to(self.device),
+                torch.tensor(active_masks_batch[batch_inds_subset], dtype=torch.float32).to(self.device),
                 torch.tensor(old_action_log_probs_batch[batch_inds_subset], dtype=torch.float32).to(self.device),
                 torch.tensor(advantages_batch[batch_inds_subset], dtype=torch.float32).to(self.device),
                 torch.tensor(available_actions_batch[batch_inds_subset], dtype=torch.bool).to(self.device) 

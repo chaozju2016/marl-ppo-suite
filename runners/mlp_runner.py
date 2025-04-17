@@ -3,10 +3,10 @@ import time
 import numpy as np
 import torch
 from buffers.buffer import RolloutStorage
-from smac.env import StarCraft2Env
+from envs import create_env
 from algos.mappo_mlp import MAPPOAgent
 from utils.logger import Logger
-from utils.reward_normalization import EfficientStandardNormalizer, FastRewardNormalizer
+from utils.reward_normalization import EfficientStandardNormalizer, EMANormalizer
 # import wandb
 
 class Runner:
@@ -27,9 +27,9 @@ class Runner:
 
         self.device = torch.device("cuda" if args.cuda and torch.cuda.is_available() else "cpu")
 
-        # Think later about the replay dir and replay prefix, which apperently can be used to save the replay
-        self.env = StarCraft2Env(map_name=args.map_name, difficulty=args.difficulty)
-        self.evaluate_env = StarCraft2Env(map_name=args.map_name,  difficulty=args.difficulty)
+        # Create training and evaluation environments using the factory function
+        self.env = create_env(args, is_eval=False)
+        self.evaluate_env = create_env(args, is_eval=True)
 
         # Get environment info
         env_info = self.env.get_env_info()
@@ -65,16 +65,17 @@ class Runner:
         # Normalize rewards
         if args.use_reward_norm:
             if args.reward_norm_type == "ema":
-                self.reward_norm = FastRewardNormalizer()
+                self.reward_norm = EMANormalizer()
             else:
                 self.reward_norm = EfficientStandardNormalizer()
 
         # Initialize logger
         run_name = (
-            f"alr{args.lr}_nsteps{args.n_steps}_"
+            f"lr{args.lr}_nsteps{args.n_steps}_"
             f"minibatch{args.num_mini_batch}_epochs{args.ppo_epoch}_"
             f"gamma{args.gamma}_gae{args.gae_lambda}_"
-            f"clip{args.clip_param}__{int(time.time())}"
+            f"clip{args.clip_param}_dmask{args.use_death_masking}_aid{args.use_agent_id}_"
+            f"as{args.use_agent_specific_state}_{int(time.time())}"
         )
 
         run_name = "".join(run_name)
@@ -85,6 +86,9 @@ class Runner:
             "env_name": env_name,
             "map_name": args.map_name,
             "difficulty": args.difficulty,
+            "use_agent_id": args.use_agent_id,
+            "death_masking": args.use_death_masking,
+            "use_agent_specific_state": args.use_agent_specific_state,
             "lr": args.lr,
             "optimizer_eps": args.optimizer_eps,
             "use_linear_lr_decay": args.use_linear_lr_decay,
@@ -101,6 +105,8 @@ class Runner:
             "gae_lambda": args.gae_lambda,
             "clip_param": args.clip_param,
             "use_clipped_value_loss": args.use_clipped_value_loss,
+            "use_huber_loss": args.use_huber_loss,
+            "huber_delta": args.huber_delta,
             "entropy_coef": args.entropy_coef,
             "use_gae": args.use_gae,
             "use_proper_time_limits": args.use_proper_time_limits,
@@ -166,6 +172,11 @@ class Runner:
             # Reset buffer for next collection
             self.buffer.after_update()
 
+        # Final evaluation
+        if self.args.use_eval:
+            print(f"Final evaluation at {self.total_steps}/{self.args.max_steps}")
+            self.evaluate(self.args.eval_episodes)
+
         # Close environments
         self.env.close()
         self.evaluate_env.close()
@@ -194,6 +205,7 @@ class Runner:
         # Get initial observations
         obs, state = self.buffer.obs[0], self.buffer.global_state[0]
         avail_actions = self.buffer.available_actions[0] # (n_agents, n_actions)
+        active_masks = self.buffer.active_masks[0] # (n_agents, )
 
         # Rollout steps
         for step in range(self.args.n_steps):
@@ -201,10 +213,11 @@ class Runner:
             actions, action_log_probs  = self.agent.get_actions(
                 obs, avail_actions, False)
             # Get values from critic
-            values = self.agent.get_values(state, obs)
+            values = self.agent.get_values(state, obs, active_masks)
 
             # Execute actions
-            reward, done, infos = self.env.step(actions)
+            reward, dones, infos = self.env.step(actions)
+            done = np.all(dones)
 
             # Update episode counters
             self.episode_length += 1
@@ -220,6 +233,7 @@ class Runner:
                 latest_stats = self.env.get_stats()
                 episode_outcome = self._check_episode_outcome(latest_stats)
                 is_truncated = episode_outcome == "truncated"
+                active_masks = np.ones_like(dones)
 
                 # Update tracking stats
                 self.game_stats.update(latest_stats)
@@ -236,11 +250,9 @@ class Runner:
                 self.episode_rewards = 0
                 self.episode_length = 0
 
-                # reset reward normalizer
-                if self.args.use_reward_norm:
-                    self.reward_norm.reset()
             else:
                 is_truncated = False
+                active_masks = np.array(1-dones)
 
             obs, state = np.array(self.env.get_obs()), np.array(self.env.get_state())
             avail_actions = np.array(self.env.get_avail_actions()) # (n_agents, n_actions)
@@ -254,6 +266,7 @@ class Runner:
                 values=values.squeeze(-1), #(n_agents, )
                 rewards=np.array([reward]).repeat(self.args.n_agents), #(n_agents, )
                 masks=np.array([1-done]).repeat(self.args.n_agents), #(n_agents, )
+                active_masks=active_masks, #(n_agents, )
                 truncates=np.array([is_truncated]).repeat(self.args.n_agents), #(n_agents, )
                 available_actions=avail_actions, # (n_agents, n_actions)
             )
@@ -264,7 +277,9 @@ class Runner:
         """
         Compute returns and advantages for the collected trajectories.
         """
-        next_value = self.agent.get_values(self.buffer.global_state[-1], self.buffer.obs[-1])
+        next_value = self.agent.get_values(self.buffer.global_state[-1],
+                                           self.buffer.obs[-1],
+                                           self.buffer.active_masks[-1])
 
         self.buffer.compute_returns_and_advantages(
             next_value.squeeze(-1),
@@ -306,12 +321,12 @@ class Runner:
                     obs, avail_actions, True)
 
                 # Execute actions
-                reward, done, infos = self.evaluate_env.step(actions)
+                reward, dones, infos = self.evaluate_env.step(actions)
 
                 # Update episode rewards
                 episode_reward += reward
                 episode_length += 1
-                episode_done = done
+                episode_done =  np.all(dones)
 
 
             # Track win rate

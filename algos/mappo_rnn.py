@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from networks.rnn_nets import Actor_RNN, Critic_RNN
 from utils.scheduler import LinearScheduler
@@ -35,15 +36,13 @@ class RMAPPOAgent:
         self._init_hyperparameters()
         self._init_networks(obs_dim, state_dim, action_dim)
 
-        if self.use_value_normalization:
+        if self.use_value_norm:
             self.value_normalizer = create_value_normalizer(
                 normalizer_type=self.args.value_norm_type,
                 device=device
             )
-
-        # Setup loss functions
-        # if self.use_huber_loss:
-        #     self.huber_loss = nn.HuberLoss(reduction="none", delta=args.huber_delta)
+        else:
+            self.value_normalizer = None
 
     def _validate_inputs(self, args, obs_dim: int, state_dim: int, action_dim: int) -> None:
         """Validate input parameters."""
@@ -60,12 +59,14 @@ class RMAPPOAgent:
         self.clip_param = self.args.clip_param
         self.ppo_epoch = self.args.ppo_epoch
         self.num_mini_batch = self.args.num_mini_batch
+        self.data_chunk_length = self.args.data_chunk_length
         self.entropy_coef = self.args.entropy_coef
         self.max_grad_norm = self.args.max_grad_norm
         self.use_max_grad_norm = self.args.use_max_grad_norm
         self.use_clipped_value_loss = self.args.use_clipped_value_loss
-        self.use_value_normalization = self.args.use_value_norm
-        # self.target_kl = self.args.target_kl
+        self.use_value_norm= self.args.use_value_norm
+        self.use_huber_loss = self.args.use_huber_loss
+        self.huber_delta = self.args.huber_delta
 
         # Training parameters
         self.lr = self.args.lr
@@ -148,7 +149,7 @@ class RMAPPOAgent:
         with torch.no_grad():
             # Convert to tensors
             obs = torch.tensor(obs, dtype=torch.float32).to(self.device) # (n_agents, n_obs)
-            rnn_states = torch.tensor(rnn_states, dtype=torch.float32).to(self.device) # (n_agents, hidden_size)
+            rnn_states = torch.tensor(rnn_states, dtype=torch.float32).to(self.device) # (num_layers, n_agents, hidden_size)
             masks = torch.tensor(masks, dtype=torch.float32).to(self.device) # (n_agents, 1)
             available_actions = torch.tensor(available_actions, dtype=torch.float32).to(self.device) # (n_agents, n_actions)
 
@@ -165,7 +166,7 @@ class RMAPPOAgent:
 
         return actions, action_log_probs, rnn_states_out
 
-    def get_values(self, state, obs, rnn_states, masks):
+    def get_values(self, state, obs, rnn_states, masks, active_masks):
         """
         Get values from the critic network.
 
@@ -174,6 +175,7 @@ class RMAPPOAgent:
             obs (np.ndarray): Observation tensor #(n_agents, n_obs)
             rnn_states (np.ndarray): RNN states tensor #(n_layers, n_agents, hidden_size)
             masks (np.ndarray): Masks tensor #(n_agents, 1)
+            active_masks (np.ndarray): Active masks tensor #(n_agents, 1)
 
         Returns:
             Tuple[np.ndarray, np.ndarray]: (values, rnn_states_out)
@@ -184,6 +186,7 @@ class RMAPPOAgent:
                 'state': state,
                 'obs': obs,
                 'masks': masks,
+                'active_masks': active_masks,
                 'rnn_states': rnn_states
             }
             tensors = {k: torch.tensor(v, dtype=torch.float32).to(self.device)
@@ -191,6 +194,7 @@ class RMAPPOAgent:
 
             # Reshape state to match agents
             tensors['state'] = tensors['state'].unsqueeze(0).repeat(self.args.n_agents, 1)
+            tensors['state'] = tensors['state'] * tensors['active_masks'] # (n_agents, n_state) # Mask out inactive agents
 
             # Create critic input
             critic_input = torch.cat((tensors['state'], tensors['obs']), dim=-1)
@@ -204,7 +208,7 @@ class RMAPPOAgent:
 
             return values.cpu().numpy(), rnn_states_out.cpu().numpy()
 
-    def evaluate_actions(self, state, obs, actions, available_actions, masks, actor_h0, critic_h0):
+    def evaluate_actions(self, state, obs, actions, available_actions, masks, active_masks, actor_h0, critic_h0):
         """
         Evaluate actions for training.
 
@@ -214,12 +218,14 @@ class RMAPPOAgent:
             actions (torch.Tensor): Actions tensor #(seq_len, batch_size, 1)
             available_actions (torch.Tensor): Available actions tensor #(seq_len, batch_size, action_dim)
             masks (torch.Tensor): Masks tensor #(seq_len, batch_size, 1)
+            active_masks (torch.Tensor): Active masks tensor #(seq_len, batch_size, 1)
             actor_h0 (torch.Tensor): Initial actor RNN states tensor #(num_layers, batch_size, hidden_size)
             critic_h0 (torch.Tensor): Initial critic RNN states tensor #(num_layers, batch_size, hidden_size)
 
         Returns:
             Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: (values, action_log_probs, dist_entropy)
         """
+        state = state * active_masks # (seq_len, batch_size, n_state) # Mask out inactive agents
         critic_input = torch.cat((state, obs), dim=-1) # (seq_len, batch_size, n_state + n_obs)
 
 
@@ -241,14 +247,10 @@ class RMAPPOAgent:
             value_preds_batch: Old value predictions
             return_batch: Return targets
         """
-        if self.use_value_normalization:
-            # Update statistics only once with returns
-            self.value_normalizer.update(returns_batch)
-
-            # Then normalize without updating statistics again
-            returns = self.value_normalizer.normalize(returns_batch, update=False)
-            values = self.value_normalizer.normalize(values, update=False)
-            value_preds_batch = self.value_normalizer.normalize(value_preds_batch, update=False)
+        if self.use_value_norm:
+            returns = self.value_normalizer.normalize(returns_batch, update=True)
+            # values = self.value_normalizer.normalize(values, update=False)
+            # value_preds_batch = self.value_normalizer.normalize(value_preds_batch, update=False)
         else:
             returns = returns_batch
 
@@ -258,11 +260,20 @@ class RMAPPOAgent:
                 -self.clip_param,
                 self.clip_param
             )
-            value_losses = (values - returns).pow(2)
-            value_losses_clipped = (value_pred_clipped - returns).pow(2)
-            value_loss = 0.5 * torch.max(value_losses, value_losses_clipped).mean()
+            if self.use_huber_loss:
+                # Compute Huber loss for clipped and unclipped predictions
+                value_losses = F.huber_loss(values, returns, delta=self.huber_delta, reduction='none')
+                value_losses_clipped = F.huber_loss(value_pred_clipped, returns, delta=self.huber_delta, reduction='none')
+                value_loss = torch.max(value_losses, value_losses_clipped).mean()
+            else:
+                value_losses = (values - returns).pow(2)
+                value_losses_clipped = (value_pred_clipped - returns).pow(2)
+                value_loss = 0.5 * torch.max(value_losses, value_losses_clipped).mean()
         else:
-            value_loss = 0.5 * (values - returns).pow(2).mean()
+            if self.use_huber_loss:
+                value_loss = F.huber_loss(values, returns, delta=self.huber_delta, reduction='mean')
+            else:
+                value_loss = 0.5 * (values - returns).pow(2).mean()
 
         return value_loss
 
@@ -280,13 +291,13 @@ class RMAPPOAgent:
 
         # Extract data from mini-batch
         (obs_batch, global_state_batch, actor_h0_batch, critic_h0_batch,
-            actions_batch, values_batch, returns_batch, masks_batch, old_action_log_probs_batch,
-            advantages_batch, available_actions_batch) = mini_batch
+            actions_batch, values_batch, returns_batch, masks_batch, active_masks_batch,
+            old_action_log_probs_batch, advantages_batch, available_actions_batch) = mini_batch
 
         # Evaluate actions
         values, action_log_probs, dist_entropy = self.evaluate_actions(
             global_state_batch, obs_batch, actions_batch,
-            available_actions_batch, masks_batch,
+            available_actions_batch, masks_batch, active_masks_batch,
             actor_h0_batch, critic_h0_batch
         )
 
@@ -348,7 +359,9 @@ class RMAPPOAgent:
         for _ in range(self.ppo_epoch):
 
             # Generate mini-batches
-            mini_batches = buffer.get_minibatches_seq_first(self.num_mini_batch)
+            mini_batches = buffer.get_minibatches_seq_first(
+                self.num_mini_batch, 
+                data_chunk_length=self.data_chunk_length)
 
             # Update for each mini-batch
             for mini_batch in mini_batches:
