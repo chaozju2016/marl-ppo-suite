@@ -10,7 +10,7 @@ def _transform_data(data_np: np.ndarray, device: torch.device, sequence_first: b
         device: Target device for tensor
         sequence_first: If True, keeps sequence dimension first [T, M, feat_dim] -> [T, M, feat_dim]
                       If False, transposes sequence and batch [T, M, feat_dim] -> [M, T, feat_dim] -> [M*T, feat_dim]
-
+                      So we get steps sorted by agents.
     Returns:
         Transformed torch tensor
     """
@@ -24,11 +24,10 @@ def _transform_data(data_np: np.ndarray, device: torch.device, sequence_first: b
         return torch.tensor(reshaped_data, dtype=torch.float32).to(device)
 
 
-
 class RecurrentRolloutStorage:
     """
     Rollout storage for collecting multi-agent experiences during training.
-    Designed for MAPPO with n-step returns and MLP-based policies.
+    Designed for MAPPO with n-step returns and RNN-based policies.
     """
     def __init__(self, n_steps, n_agents, obs_dim, action_dim, state_dim, hidden_size,
                  num_rnn_layers=1, use_value_norm=False, device='cpu'):

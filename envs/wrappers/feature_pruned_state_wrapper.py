@@ -31,7 +31,7 @@ class FeaturePrunedStateWrapper(BaseWrapper):
                  add_center_xy=True,
                  add_enemy_action_state=False,
                  use_mustalive=True,
-                 add_agent_id=True):
+                 use_agent_id=True):
         """
         Initialize the wrapper with the base environment.
 
@@ -44,7 +44,7 @@ class FeaturePrunedStateWrapper(BaseWrapper):
             add_center_xy: Whether to add center-relative coordinates to the state (default: True)
             add_enemy_action_state: Whether to add enemy action availability to the state (default: False)
             use_mustalive: Whether to only return non-zero state for alive agents (default: True)
-            add_agent_id: Whether to add agent ID to observations and states (default: True)
+            use_agent_id: Whether to add agent ID to observations and states (default: True)
         """
         super(FeaturePrunedStateWrapper, self).__init__(env)
         self.use_agent_specific_state = use_agent_specific_state
@@ -54,7 +54,7 @@ class FeaturePrunedStateWrapper(BaseWrapper):
         self.add_center_xy = add_center_xy
         self.add_enemy_action_state = add_enemy_action_state
         self.use_mustalive = use_mustalive
-        self.add_agent_id = add_agent_id
+        self.use_agent_id = use_agent_id
         self.add_local_obs = False  # Always set to False as we don't need it
         self.add_move_state = False  # Always set to False as we don't need it
 
@@ -222,7 +222,7 @@ class FeaturePrunedStateWrapper(BaseWrapper):
             ))
 
             # Add agent ID if enabled
-            if self.add_agent_id:
+            if self.use_agent_id:
                 agent_id_feats = np.zeros(self.n_agents, dtype=np.float32)
                 agent_id_feats[agent_id] = 1.0
                 state = np.append(state, agent_id_feats)
@@ -399,7 +399,7 @@ class FeaturePrunedStateWrapper(BaseWrapper):
         ))
 
         # Add agent ID if enabled
-        if self.add_agent_id:
+        if self.use_agent_id:
             agent_id_feats = np.zeros(self.n_agents, dtype=np.float32)
             agent_id_feats[agent_id] = 1.0
             state = np.append(state, agent_id_feats)
@@ -419,7 +419,7 @@ class FeaturePrunedStateWrapper(BaseWrapper):
             agent_obs = self.get_obs_agent(i)
 
             # Add agent ID if enabled
-            if self.add_agent_id:
+            if self.use_agent_id:
                 agent_id_feats = np.zeros(self.n_agents, dtype=np.float32)
                 agent_id_feats[i] = 1.0
                 agent_obs = np.concatenate((agent_obs, agent_id_feats))
@@ -438,7 +438,7 @@ class FeaturePrunedStateWrapper(BaseWrapper):
         obs_size = self.env.get_obs_size()
 
         # Add agent ID size if enabled
-        if self.add_agent_id:
+        if self.use_agent_id:
             obs_size += self.n_agents
 
         return obs_size
@@ -493,7 +493,7 @@ class FeaturePrunedStateWrapper(BaseWrapper):
         size = own_feats + ally_feats + enemy_feats
 
         # Add agent ID if enabled
-        if self.add_agent_id:
+        if self.use_agent_id:
             size += self.n_agents
 
         return size
@@ -586,7 +586,7 @@ class FeaturePrunedStateWrapper(BaseWrapper):
         env_info = self.env.get_env_info()
 
         # Update observation size if agent ID is enabled
-        if self.add_agent_id:
+        if self.use_agent_id:
             env_info['obs_shape'] = self.get_obs_size()
 
         # Update state size if agent-specific state is enabled

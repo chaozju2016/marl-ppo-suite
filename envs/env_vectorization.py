@@ -74,7 +74,7 @@ class VecEnv(ABC):
     viewer = None
     metadata = {"render.modes": ["human", "rgb_array"]}
 
-    def __init__(self, num_envs, observation_space, share_observation_space, action_space):
+    def __init__(self, num_envs, observation_space, share_observation_space, action_space, n_agents=None, episode_limit=None):
         """
         Initialize the vectorized environment.
 
@@ -83,11 +83,15 @@ class VecEnv(ABC):
             observation_space: Observation space of a single environment
             share_observation_space: Shared observation space (for CTDE algorithms)
             action_space: Action space of a single environment
+            n_agents: Number of agents in the environment (default: None)
+            episode_limit: Maximum number of steps per episode (default: None)
         """
         self.num_envs = num_envs
         self.observation_space = observation_space
         self.share_observation_space = share_observation_space
         self.action_space = action_space
+        self.n_agents = n_agents
+        self.episode_limit = episode_limit
 
     @abstractmethod
     def reset(self):
@@ -205,6 +209,23 @@ class VecEnv(ABC):
                 print("Warning: gymnasium.envs.classic_control.rendering not available. Rendering not supported.")
         return self.viewer
 
+    def get_env_info(self):
+        """
+        Get information about the environment.
+
+        Returns:
+            Dictionary containing environment information
+        """
+        info = {
+            'num_envs': self.num_envs,
+            'observation_space': self.observation_space,
+            'share_observation_space': self.share_observation_space,
+            'action_space': self.action_space,
+            'n_agents': self.n_agents,
+            'episode_limit': self.episode_limit
+        }
+        return info
+
 
 def worker(remote, parent_remote, env_fn_wrapper):
     """
@@ -262,6 +283,9 @@ def worker(remote, parent_remote, env_fn_wrapper):
         elif cmd == "get_num_agents":
             remote.send((env.n_agents))
 
+        elif cmd == "get_episode_limit":
+            remote.send(env.episode_limit)
+
         else:
             raise NotImplementedError(f"Unknown command: {cmd}")
 
@@ -310,12 +334,17 @@ class SubprocVecEnv(VecEnv):
         self.remotes[0].send(("get_num_agents", None))
         self.n_agents = self.remotes[0].recv()
 
+        # Get episode limit
+        self.remotes[0].send(("get_episode_limit", None))
+        self.episode_limit = self.remotes[0].recv()
+
         # Get spaces
         self.remotes[0].send(("get_spaces", None))
         observation_space, share_observation_space, action_space = self.remotes[0].recv()
 
         VecEnv.__init__(
-            self, len(env_fns), observation_space, share_observation_space, action_space
+            self, len(env_fns), observation_space, share_observation_space, action_space,
+            self.n_agents, self.episode_limit
         )
 
     def step_async(self, actions):
@@ -420,20 +449,21 @@ class DummyVecEnv(VecEnv):
         self.envs = [fn() for fn in env_fns]
         env = self.envs[0]
 
+        # Get n_agents and episode_limit from the environment
+        self.n_agents = getattr(env, 'n_agents', None)
+        self.episode_limit = getattr(env, 'episode_limit', None)
+
         VecEnv.__init__(
             self,
             len(env_fns),
             env.observation_space,
             env.share_observation_space,
             env.action_space,
+            self.n_agents,
+            self.episode_limit
         )
 
         self.actions = None
-
-        try:
-            self.n_agents = env.n_agents
-        except:
-            pass
 
     def step_async(self, actions):
         """

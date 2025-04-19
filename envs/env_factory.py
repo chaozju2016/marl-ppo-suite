@@ -60,7 +60,7 @@ def make_env(args, seed=None, rank=None, is_eval=False):
             add_center_xy=args.add_center_xy,
             add_enemy_action_state=args.add_enemy_action_state,
             use_mustalive=args.use_mustalive,
-            add_agent_id=args.use_agent_id
+            use_agent_id=args.use_agent_id
         )
 
         return env

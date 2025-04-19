@@ -1,7 +1,7 @@
 import argparse
 from runners.mlp_runner import Runner
 from runners.rnn_runner import RecurrentRunner
-from runners.agent_specific_rnn_runner import AgentSpecificRecurrentRunner
+from runners.as_vec_rnn_runner import AgentSpecificRecurrentRunner
 
 def parse_args():
     """
@@ -11,9 +11,25 @@ def parse_args():
         argparse.Namespace: Parsed arguments
     """
     parser = argparse.ArgumentParser("MAPPO for StarCraft")
+    
+    # Algorithm parameters
     parser.add_argument("--algo", type=str, default="mappo_rnn",
                         choices=["mappo", "mappo_rnn", "as_mappo_rnn"],
                         help="Which algorithm to use")
+    parser.add_argument("--seed", type=int, default=1, help="Random seed for numpy/torch")
+    parser.add_argument("--cuda", action='store_false', default=True, 
+                        help="by default True, will use GPU to train; or else will use CPU;")
+    parser.add_argument("--cuda_deterministic",
+                        action='store_false', default=True, 
+                        help="by default, make sure random seed effective. if set, bypass such function.")
+    parser.add_argument("--max_steps", type=int, default=1000000,
+                        help="Number of environment steps to train on")
+    # NOTE: rollout_threads supported only in as_mappo_rnn
+    parser.add_argument("--n_rollout_threads", type=int, default=8,
+                        help="Number of parallel environments")
+    parser.add_argument("--n_eval_rollout_threads", type=int, default=1,
+                        help="Number of threads for evaluation")
+  
 
     # Environment parameters
     parser.add_argument("--map_name", type=str, default="3m",
@@ -44,23 +60,8 @@ def parse_args():
         help="Whether to add center-relative coordinates to the state (default: True)")
     parser.add_argument("--add_enemy_action_state", action="store_true", default=False,
         help="Whether to add enemy action availability to the state (default: False)")
-    parser.add_argument("--add_move_state", action="store_true", default=False,
-        help="Whether to add movement features to the state (default: False)")
-    parser.add_argument("--add_local_obs", action="store_true", default=False,
-        help="Whether to add the agent's local observation to the state (default: False)")
     parser.add_argument("--use_mustalive", action="store_false", default=True,
-        help="Whether to only return non-zero state for alive agents (default: True)")
-
-    parser.add_argument("--seed", type=int, default=1,
-                        help="Random seed")
-    parser.add_argument("--cuda", action="store_false", default=True,
-                        help="Whether to use CUDA")
-
-    # Training parameters
-    parser.add_argument("--n_rollout_threads", type=int, default=1,
-                        help="Number of parallel environments")
-    parser.add_argument("--max_steps", type=int, default=1000000,
-                        help="Number of environment steps to train on")
+        help="Whether to only return non-zero state for alive agents (default: True)")    
 
     # Optimizer parameters
     parser.add_argument("--lr", type=float, default=5e-4,
@@ -93,8 +94,6 @@ def parse_args():
                         help="Use running mean and std to normalize rewards (default: True)")
     parser.add_argument("--reward_norm_type", type=str, default="efficient", choices=["efficient", "ema"],
                         help="Type of reward normalizer to use: 'efficient' (standard) or 'ema' (exponential moving average)")
-    parser.add_argument("--use_coordinated_norm", action="store_true",
-                        help="Use coordinated normalization for both rewards and values (default: False)")
 
 
     # PPO parameters
@@ -151,15 +150,6 @@ def parse_args():
 def main():
     args = parse_args()
 
-    # Check for mutually exclusive options
-    if args.use_coordinated_norm:
-        if not args.use_reward_norm:
-            print("Warning: use_coordinated_norm requires use_reward_norm. Enabling reward normalization.")
-            args.use_reward_norm = True
-        if not args.use_value_norm:
-            print("Warning: use_coordinated_norm requires use_value_norm. Enabling value normalization.")
-            args.use_value_norm = True
-
     print("=============================")
     print(f"Training {args.algo.upper()} for StarCraft")
     print("=============================")
@@ -167,22 +157,26 @@ def main():
     print(f"Difficulty: {args.difficulty}")
     print(f"Seed: {args.seed}")
     print(f"Algorithm: {args.algo}")
-    print(f"Reward Norm: {args.use_reward_norm}")
+    print(f"Reward Norm: {args.use_reward_norm} ({args.reward_norm_type})")
     print(f"Value Norm: {args.use_value_norm} ({args.value_norm_type})")
-    print(f"Coordinated Norm: {args.use_coordinated_norm}")
 
     # Print agent-specific state parameters if using as_mappo_rnn
     if args.algo == "as_mappo_rnn":
-        print("\nAgent-Specific State Parameters:")
+        print("\nFeature Pruned AS State Parameters:")
         print(f"  Use Agent-Specific State: {args.use_agent_specific_state}")
         print(f"  Add Distance State: {args.add_distance_state}")
         print(f"  Add XY State: {args.add_xy_state}")
         print(f"  Add Visible State: {args.add_visible_state}")
         print(f"  Add Center XY: {args.add_center_xy}")
         print(f"  Add Enemy Action State: {args.add_enemy_action_state}")
-        print(f"  Add Move State: {args.add_move_state}")
-        print(f"  Add Local Obs: {args.add_local_obs}")
         print(f"  Use Must Alive: {args.use_mustalive}")
+        print(f"  Add Agent ID: {args.use_agent_id}")
+
+        print("\nTraining Parameters:")
+        print(f" Rollout Threads: {args.n_rollout_threads}")
+        print(f"  Steps: {args.n_steps}")
+        print(f"  Epochs: {args.ppo_epoch}")
+        print(f"  Mini-Batches: {args.num_mini_batch}")
 
     # print(f"Using {'CUDA' if args.cuda and torch.cuda.is_available() else 'CPU'}")
     # print(f"Using {'recurrent' if args.use_recurrent_policy else 'MLP'} policy")
