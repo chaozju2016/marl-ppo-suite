@@ -132,10 +132,12 @@ class FeaturePrunedStateWrapper(BaseWrapper):
         rewards = [[reward]] * self.n_agents
 
         # Format dones for each agent
-        if isinstance(terminated, bool):
-            dones = [terminated] * self.n_agents
+        if terminated:
+            # If the episode is terminated, all agents are done
+            dones = [True] * self.n_agents
         else:
-            dones = terminated
+            # Create a list of done flags for each agent based on death status
+            dones = [bool(self.env.death_tracker_ally[agent_id]) for agent_id in range(self.n_agents)]
 
         return obs, states, rewards, dones, info, available_actions
 
