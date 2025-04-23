@@ -45,10 +45,6 @@ class MAPPO:
         self._init_hyperparameters()
         self._init_networks(obs_space, state_space, action_space)
 
-        # Store dimensions for later use
-        self.obs_dim = obs_dim
-        self.state_dim = state_dim
-        self.action_dim = action_dim
 
         if self.use_value_norm:
             self.value_normalizer = create_value_normalizer(

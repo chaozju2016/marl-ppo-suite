@@ -2,6 +2,7 @@
 Environment factory for creating StarCraft 2 environments with various wrappers.
 """
 from smac.env import StarCraft2Env
+from envs.smacv1.Starcraft2_Env import StarCraft2Env as SMACv1Env
 from envs.env_vectorization import SubprocVecEnv, DummyVecEnv
 from envs.wrappers import AgentIDWrapper, DeathMaskingWrapper, FeaturePrunedStateWrapper
 
@@ -47,20 +48,27 @@ def make_env(args, rank=None, is_eval=False):
         A function that creates the environment when called
     """
     def _thunk():
+        
+        if args.use_fp_wrapper:
+            env = StarCraft2Env(map_name=args.map_name, difficulty=args.difficulty, obs_last_action=args.obs_last_actions)
 
-        env = StarCraft2Env(map_name=args.map_name, difficulty=args.difficulty, obs_last_action=args.obs_last_actions)
-
-        env = FeaturePrunedStateWrapper(
-            env,
-            use_agent_specific_state=args.use_agent_specific_state,
-            add_distance_state=args.add_distance_state,
-            add_xy_state=args.add_xy_state,
-            add_visible_state=args.add_visible_state,
-            add_center_xy=args.add_center_xy,
-            add_enemy_action_state=args.add_enemy_action_state,
-            use_mustalive=args.use_mustalive,
-            use_agent_id=args.use_agent_id
-        )
+            env = FeaturePrunedStateWrapper(
+                env,
+                use_agent_specific_state=args.use_agent_specific_state,
+                add_distance_state=args.add_distance_state,
+                add_xy_state=args.add_xy_state,
+                add_visible_state=args.add_visible_state,
+                add_center_xy=args.add_center_xy,
+                add_enemy_action_state=args.add_enemy_action_state,
+                use_mustalive=args.use_mustalive,
+                use_agent_id=args.use_agent_id
+            )
+        else:
+            env = SMACv1Env(
+                map_name=args.map_name, 
+                difficulty=args.difficulty,
+                state_type= args.state_type
+            )
 
         return env
 

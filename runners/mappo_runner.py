@@ -83,8 +83,8 @@ class MAPPORunner:
             f"lr{args.lr}_nenvs{args.n_rollout_threads}_nsteps{args.n_steps}_"
             f"minibatch{args.num_mini_batch}_epochs{args.ppo_epoch}_"
             f"gamma{args.gamma}_gae{args.gae_lambda}_"
-            f"clip{args.clip_param}_dmask{args.use_mustalive}_aid{args.use_agent_id}_"
-            f"rnn{args.use_rnn}_as{args.use_agent_specific_state}_{int(time.time())}"
+            f"clip{args.clip_param}_state{args.state_type}_"
+            f"rnn{args.use_rnn}_{int(time.time())}"
         )
 
         run_name = "".join(run_name)
@@ -97,14 +97,9 @@ class MAPPORunner:
             "map_name": args.map_name,
             "difficulty": args.difficulty,
             "use_rnn": args.use_rnn,
+            "state_type": args.state_type,
+            "use_fp_wrapper": args.use_fp_wrapper,
             "use_agent_specific_state": args.use_agent_specific_state,
-            "add_distance_state": args.add_distance_state,
-            "add_xy_state": args.add_xy_state,
-            "add_visible_state": args.add_visible_state,
-            "add_center_xy": args.add_center_xy,
-            "add_enemy_action_state": args.add_enemy_action_state,
-            "use_agent_id": args.use_agent_id,
-            "use_mustalive": args.use_mustalive,
             "lr": args.lr,
             "optimizer_eps": args.optimizer_eps,
             "use_linear_lr_decay": args.use_linear_lr_decay,

@@ -51,15 +51,13 @@ def parse_args():
     parser.add_argument("--obs_last_actions", action="store_true", default=False,
                         help="Whether to include last actions in observations (default: False)")
 
-    # Agent ID parameters
+    # FP_AS state parameters 
+    parser.add_argument("--use_fp_wrapper", action="store_true", default=False,
+        help="Whether to add enemy action availability to the state (default: False)")
     parser.add_argument("--use_agent_id", action="store_false", default=True,
         help="Whether to add agent_id to observation (default: True)")
-
-    # Death masking parameters
     parser.add_argument("--use_mustalive", action="store_false", default=True,
         help="Whether to only return non-zero state for alive agents (default: True)")
-
-    # Agent-specific state parameters
     parser.add_argument("--use_agent_specific_state", action="store_false", default=True,
         help="Whether to use agent-specific global state (default: False)")
     parser.add_argument("--add_distance_state", action="store_true", default=False,
@@ -73,6 +71,9 @@ def parse_args():
     parser.add_argument("--add_enemy_action_state", action="store_true", default=False,
         help="Whether to add enemy action availability to the state (default: False)")
     
+    # SMACv1 state parameters 
+    parser.add_argument("--state_type", type=str, default="FP", choices=["FP", "EP"],
+        help="Type of state to use: 'FP' (Feature Pruned AS) or 'EP' (Environment Provided)")
 
     # Optimizer parameters
     parser.add_argument("--lr", type=float, default=5e-4,
@@ -168,15 +169,18 @@ def main():
     print(f"Reward Norm: {args.use_reward_norm} ({args.reward_norm_type})")
     print(f"Value Norm: {args.use_value_norm} ({args.value_norm_type})")
 
-    print("\nFeature Pruned AS State Parameters:")
-    print(f"  Use Agent-Specific State: {args.use_agent_specific_state}")
-    print(f"  Add Distance State: {args.add_distance_state}")
-    print(f"  Add XY State: {args.add_xy_state}")
-    print(f"  Add Visible State: {args.add_visible_state}")
-    print(f"  Add Center XY: {args.add_center_xy}")
-    print(f"  Add Enemy Action State: {args.add_enemy_action_state}")
-    print(f"  Use Must Alive: {args.use_mustalive}")
-    print(f"  Add Agent ID: {args.use_agent_id}")
+    if args.use_fp_wrapper:
+        print("\nFeature Pruned AS State Parameters:")
+        print(f"  Use Agent-Specific State: {args.use_agent_specific_state}")
+        print(f"  Add Distance State: {args.add_distance_state}")
+        print(f"  Add XY State: {args.add_xy_state}")
+        print(f"  Add Visible State: {args.add_visible_state}")
+        print(f"  Add Center XY: {args.add_center_xy}")
+        print(f"  Add Enemy Action State: {args.add_enemy_action_state}")
+        print(f"  Use Must Alive: {args.use_mustalive}")
+        print(f"  Add Agent ID: {args.use_agent_id}")
+    else:
+        print(f"State Type: {args.state_type}")
 
     print("\nTraining Parameters:")
     print(f" Rollout Threads: {args.n_rollout_threads}")

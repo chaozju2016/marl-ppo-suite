@@ -303,8 +303,7 @@ class FeaturePrunedStateWrapper(BaseWrapper):
         if self.env.state_last_action:
             # Get last_action from the environment
             last_action = self.env.last_action
-            if last_action is not None:
-                own_feats[own_idx:own_idx + self.n_actions] = last_action[agent_id]
+            own_feats[own_idx:own_idx + self.n_actions] = last_action[agent_id]
 
         # Fill in ally features
         al_ids = [al_id for al_id in range(self.n_agents) if al_id != agent_id]
@@ -367,8 +366,7 @@ class FeaturePrunedStateWrapper(BaseWrapper):
                 if self.env.state_last_action:
                     # Get last_action from the environment
                     last_action = self.env.last_action
-                    if last_action is not None:
-                        ally_state[i, idx:idx + self.n_actions] = last_action[al_id]
+                    ally_state[i, idx:idx + self.n_actions] = last_action[al_id]
 
         # Fill in enemy features
         for e_id, e_unit in self.env.enemies.items():
