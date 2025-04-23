@@ -83,8 +83,8 @@ class MAPPORunner:
             f"lr{args.lr}_nenvs{args.n_rollout_threads}_nsteps{args.n_steps}_"
             f"minibatch{args.num_mini_batch}_epochs{args.ppo_epoch}_"
             f"gamma{args.gamma}_gae{args.gae_lambda}_"
-            f"clip{args.clip_param}_dmask{args.use_death_masking}_aid{args.use_agent_id}_"
-            f"as{args.use_agent_specific_state}_{int(time.time())}"
+            f"clip{args.clip_param}_dmask{args.use_mustalive}_aid{args.use_agent_id}_"
+            f"rnn{args.use_rnn}_as{args.use_agent_specific_state}_{int(time.time())}"
         )
 
         run_name = "".join(run_name)
@@ -131,11 +131,7 @@ class MAPPORunner:
             "max_grad_norm": args.max_grad_norm,
             "use_eval": args.use_eval,
             "eval_interval": args.eval_interval,
-            "eval_episodes": args.eval_episodes,
-            "save_interval": args.save_interval,
-            "save_dir": args.save_dir,
-            "save_replay": args.save_replay,
-            "replay_dir": args.replay_dir
+            "eval_episodes": args.eval_episodes
         })
 
 

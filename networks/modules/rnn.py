@@ -79,8 +79,8 @@ class GRUModule(nn.Module):
             # Apply mask to RNN states
             temp_states = (rnn_states * masks.view(1, -1, 1)).contiguous() # (num_layers, batch_size, hidden_size)
             x, rnn_states = self.gru(x, temp_states)
-            x = x.squeeze(0) # (B, hidden_size)
-
+            x = x.squeeze(0) # (B, hidden_size) 
+            rnn_states = rnn_states.transpose(0, 1) # (num_layers, B, hidden_dim) -> (B, num_layers, hidden_dim)
             return self.gru_layer_norm(x), rnn_states
 
         ##################################

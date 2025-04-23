@@ -22,7 +22,8 @@ def _transform_data(data_np: np.ndarray, device: torch.device, sequence_first: b
         return torch.tensor(data_np, dtype=torch.float32).to(device)
     else:
         # Original behavior: transpose and flatten
-        reshaped_data = data_np.transpose(1, 2, 0, 3).reshape(-1, *data_np.shape[2:])
+        # Use copy() to ensure contiguous memory layout in NumPy
+        reshaped_data = data_np.transpose(1, 2, 0, 3).reshape(-1, *data_np.shape[3:]).copy()
         return torch.tensor(reshaped_data, dtype=torch.float32).to(device)
 
 
