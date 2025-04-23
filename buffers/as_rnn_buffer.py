@@ -32,29 +32,29 @@ class AgentSpecificRecurrentRolloutStorage:
     Designed for MAPPO with n-step returns and RNN-based policies.
     Support for agent-specific global state and multiple parallel environments.
     """
-    def __init__(self, n_steps, n_rollout_threads, n_agents, obs_space, action_space, state_space, hidden_size,
-                 agent_specific_global_state=False,
-                 num_rnn_layers=1, device='cpu'):
+    def __init__(self, args, n_agents, obs_space, action_space, state_space, device='cpu'):
         """
         Initialize rollout storage for collecting experiences.  
         
         Args:
-            n_steps (int): Number of steps to collect before update (can be different from episode length)
-            n_rollout_threads (int): Number of parallel environments
+            args: Arguments containing training hyperparameters
+            args.n_steps: Number of steps to collect before update (can be different from episode length)
+            args.n_rollout_threads: Number of parallel environments
+            args.use_rnn: Whether to use RNN networks (default: False)
+            args.rnn_layers: Number of layers in the RNN
+            args.hidden_size: Dimension of hidden state
             n_agents (int): Number of agents in the environment
             obs_space: Observation space
             action_space: Action space
             state_space: State space
-            agent_specific_global_state: Whether to use agent-specific global state
-            hidden_size (int): Dimension of hidden state  
-            num_rnn_layers (int): Number of layers in the RNN  
             device (str): Device for storage ('cpu' for numpy-based implementation)
         """
-        self.n_steps = n_steps
-        self.n_rollout_threads = n_rollout_threads
+        self.n_steps = args.n_steps
+        self.n_rollout_threads = args.n_rollout_threads
         self.n_agents = n_agents
-        self.num_rnn_layers = num_rnn_layers
-        self.agent_specific_global_state = agent_specific_global_state
+        self.use_rnn = args.use_rnn
+        self.num_rnn_layers = args.rnn_layers
+        self.hidden_size = args.hidden_size
         self.device = torch.device(device)
         
         # Current position in the buffer
@@ -67,36 +67,41 @@ class AgentSpecificRecurrentRolloutStorage:
         state_shape = get_shape_from_obs_space(state_space)
 
         # Core storage buffers - using numpy arrays for efficiency
-        self.obs = np.zeros((n_steps + 1, n_rollout_threads, n_agents, *obs_shape), dtype=np.float32)
-        self.global_state = np.zeros((n_steps + 1, n_rollout_threads, n_agents, *state_shape), dtype=np.float32)
-        self.rewards = np.zeros((n_steps, n_rollout_threads, n_agents, 1), dtype=np.float32)
-        self.actions = np.zeros((n_steps, n_rollout_threads, n_agents, action_shape), dtype=np.int64)
-        self.action_log_probs = np.zeros((n_steps, n_rollout_threads, n_agents, 1), dtype=np.float32)
-        self.values = np.zeros((n_steps + 1, n_rollout_threads, n_agents, 1), dtype=np.float32)
-        self.masks = np.ones((n_steps + 1, n_rollout_threads, n_agents, 1), dtype=np.float32) # 0 if episode done, 1 otherwise
-        self.truncated = np.zeros((n_steps + 1, n_rollout_threads, n_agents, 1), dtype=np.bool_) # 1 if episode truncated, 0 otherwise
+        self.obs = np.zeros((self.n_steps + 1, self.n_rollout_threads, n_agents, *obs_shape), dtype=np.float32)
+        self.global_state = np.zeros((self.n_steps + 1, self.n_rollout_threads, n_agents, *state_shape), dtype=np.float32)
+        self.rewards = np.zeros((self.n_steps, self.n_rollout_threads, n_agents, 1), dtype=np.float32)
+        self.actions = np.zeros((self.n_steps, self.n_rollout_threads, n_agents, action_shape), dtype=np.int64)
+        self.action_log_probs = np.zeros((self.n_steps, self.n_rollout_threads, n_agents, 1), dtype=np.float32)
+        self.values = np.zeros((self.n_steps + 1, self.n_rollout_threads, n_agents, 1), dtype=np.float32)
+        self.masks = np.ones((self.n_steps + 1, self.n_rollout_threads, n_agents, 1), dtype=np.float32) # 0 if episode done, 1 otherwise
+        self.active_masks = np.ones((self.n_steps + 1, self.n_rollout_threads, n_agents, 1), dtype=np.float32) # 0 if agent dead, 1 otherwise
+        self.truncated = np.zeros((self.n_steps + 1, self.n_rollout_threads, n_agents, 1), dtype=np.bool_) # 1 if episode truncated, 0 otherwise
         
         # Initialize available actions buffer if shape is Discrete
         if action_space.__class__.__name__ == "Discrete":
-            self.available_actions = np.ones((n_steps+1, n_rollout_threads, n_agents, action_space.n), dtype=np.float32)
+            self.available_actions = np.ones((self.n_steps+1, self.n_rollout_threads, n_agents, action_space.n), dtype=np.float32)
         else:
             self.available_actions = None
 
         # RNN hidden states
-        # Shape: [n_steps + 1, n_rollout_threads, n_agents, num_layers, hidden_size]
-        self.actor_rnn_states = np.zeros(
-            (n_steps + 1, n_rollout_threads, n_agents, num_rnn_layers, hidden_size), 
-            dtype=np.float32)
-        self.critic_rnn_states = np.zeros_like(self.actor_rnn_states)
+        if self.use_rnn:
+            # Shape: [n_steps + 1, n_rollout_threads, n_agents, num_layers, hidden_size]
+            self.actor_rnn_states = np.zeros(
+                (self.n_steps + 1, self.n_rollout_threads, n_agents, self.num_rnn_layers, self.hidden_size), 
+                dtype=np.float32)
+            self.critic_rnn_states = np.zeros_like(self.actor_rnn_states)
+        else:
+            self.actor_rnn_states = None
+            self.critic_rnn_states = None
         
         # Extra buffers for the algorithm
-        self.returns = np.zeros((n_steps + 1, n_rollout_threads, n_agents, 1), dtype=np.float32)
-        self.advantages = np.zeros((n_steps, n_rollout_threads, n_agents, 1), dtype=np.float32)
+        self.returns = np.zeros((self.n_steps + 1, self.n_rollout_threads, n_agents, 1), dtype=np.float32)
+        self.advantages = np.zeros((self.n_steps, self.n_rollout_threads, n_agents, 1), dtype=np.float32)
         
     def insert(self, obs, global_state, actions, 
         action_log_probs, values, rewards, 
-        masks, truncates, available_actions,
-        actor_rnn_states, critic_rnn_states):
+        masks, truncates, actor_rnn_states=None, critic_rnn_states=None,
+        active_masks=None, available_actions=None):
         """
         Insert a new transition into the buffer.
         
@@ -107,12 +112,13 @@ class AgentSpecificRecurrentRolloutStorage:
             action_log_probs: Log probs of actions [n_rollout_threads, n_agents, 1]
             values: Value predictions [n_rollout_threads, n_agents, 1]
             rewards: Rewards received [n_rollout_threads, n_agents, 1]
-            masks: Episode termination masks [n_rollout_threads, n_agents], 0 if episode done, 1 otherwise
+            masks: Episode termination masks [n_rollout_threads, n_agents, 1], 0 if episode done, 1 otherwise
             truncates: Boolean array indicating if episode was truncated (e.g., due to time limit) 
-                      rather than terminated [n_rollout_threads, n_agents]
-            available_actions: Available actions mask [n_rollout_threads, n_agents, n_actions]
+                      rather than terminated [n_rollout_threads, n_agents, 1]
             actor_rnn_states: RNN states [n_rollout_threads, num_layers, n_agents, hidden_size]
             critic_rnn_states: RNN states [n_rollout_threads, num_layers, n_agents, hidden_size]
+            active_masks: Agent active masks [n_rollout_threads, n_agents, 1], 0 if agent dead, 1 otherwise
+            available_actions: Available actions mask [n_rollout_threads, n_agents, n_actions]
         """
         self.obs[self.step + 1] = obs.copy()
         self.global_state[self.step + 1] = global_state.copy()
@@ -123,10 +129,16 @@ class AgentSpecificRecurrentRolloutStorage:
         self.rewards[self.step] = rewards.copy()
         self.masks[self.step + 1] = masks.copy()
         self.truncated[self.step + 1] = truncates.copy()
-        self.available_actions[self.step + 1] = available_actions.copy()
         
-        self.actor_rnn_states[self.step + 1] = actor_rnn_states.copy()
-        self.critic_rnn_states[self.step + 1] = critic_rnn_states.copy()
+        if self.use_rnn:
+            self.actor_rnn_states[self.step + 1] = actor_rnn_states.copy()
+            self.critic_rnn_states[self.step + 1] = critic_rnn_states.copy()
+
+        if active_masks is not None:
+            self.active_masks[self.step + 1] = active_masks.copy()
+        
+        if available_actions is not None:
+            self.available_actions[self.step + 1] = available_actions.copy()
         
         self.step += 1
         
@@ -212,15 +224,93 @@ class AgentSpecificRecurrentRolloutStorage:
         self.obs[0] = self.obs[-1].copy()
         self.global_state[0] = self.global_state[-1].copy()    
         self.masks[0] = self.masks[-1].copy()
+        self.active_masks[0] = self.active_masks[-1].copy()
         self.truncated[0] = self.truncated[-1].copy()
-        self.available_actions[0] = self.available_actions[-1].copy()
 
         # Copy RNN states
-        self.actor_rnn_states[0] = self.actor_rnn_states[-1].copy()
-        self.critic_rnn_states[0] = self.critic_rnn_states[-1].copy()
+        if self.use_rnn:
+            self.actor_rnn_states[0] = self.actor_rnn_states[-1].copy()
+            self.critic_rnn_states[0] = self.critic_rnn_states[-1].copy()
+
+        if self.available_actions is not None:
+            self.available_actions[0] = self.available_actions[-1].copy()
 
         # Reset step counter
         self.step = 0
+
+    def get_minibatches(self, num_mini_batch, mini_batch_size=None):
+        """
+        Create minibatches for training - not RNN version
+        
+        Args:
+            num_mini_batch (int): Number of minibatches to create
+            mini_batch_size (int, optional): Size of each minibatch, if None will be calculated
+                                            based on num_mini_batch
+        
+        Returns:
+            Generator yielding minibatches for training
+        """
+        if self.use_rnn:
+            raise ValueError("RNN is enabled, cannot use get_minibatches")
+
+        batch_size = self.n_steps * self.n_rollout_threads * self.n_agents  # e.g., T * N * M = 400 * 8 * 5 = 16000
+
+        if mini_batch_size is None:
+            mini_batch_size = batch_size // num_mini_batch
+        
+        # Create random indices for minibatches
+        batch_inds = np.random.permutation(batch_size)
+
+        # Preshape data to improve performance (only do this once)
+        # Batch size is [T, N, M, feat_dim] -> [T*N*M, feat_dim]
+        data = {
+            'obs': self.obs[:-1].reshape(-1, *self.obs.shape[3:]),
+            'global_state': self.global_state[:-1].reshape(-1, *self.global_state.shape[3:]),
+            'actions': self.actions.reshape(-1, self.actions.shape[-1]), 
+            'values': self.values[:-1].reshape(-1, 1), 
+            'returns': self.returns[:-1].reshape(-1, 1),
+            'masks': self.masks[:-1].reshape(-1, 1),
+            'active_masks': self.active_masks[:-1].reshape(-1, 1),
+            'old_action_log_probs': self.action_log_probs.reshape(-1, 1),
+            'advantages': self.advantages.reshape(-1, 1),  
+        }
+
+        # Handle available actions specially
+        if self.available_actions is not None:
+            data['available_actions'] = self.available_actions[:-1].reshape(-1, self.available_actions.shape[-1])
+
+        # Yield minibatches
+        start_ind = 0
+        for _ in range(num_mini_batch):
+            end_ind = min(start_ind + mini_batch_size, batch_size)
+            if end_ind - start_ind < 1:  # Skip empty batches
+                continue
+                
+            batch_inds_subset = batch_inds[start_ind:end_ind]
+  
+            batch = {
+                key: torch.tensor(data[key][batch_inds_subset], dtype=torch.float32).to(self.device)
+                for key in data.keys()
+            }
+
+            # Yield the minibatch as a tuple
+            yield ( 
+                batch['obs'],
+                batch['global_state'],
+                None, #actor_rnn_states,
+                None, #critic_rnn_states,
+                batch['actions'],
+                batch['values'],
+                batch['returns'],
+                batch['masks'],
+                batch['active_masks'],
+                batch['old_action_log_probs'],
+                batch['advantages'],
+                batch['available_actions'] if 'available_actions' in batch else None # Handle optional key
+            )
+            
+            start_ind = end_ind
+
 
     def get_minibatches_seq_first(self, num_mini_batch, data_chunk_length = 10):
         """
@@ -240,6 +330,9 @@ class AgentSpecificRecurrentRolloutStorage:
             - critic_rnn_states: [num_layers, batch_size, hidden_size]
             - actions, values, returns, etc.: [seq_len, batch_size, dim]
         """
+        if not self.use_rnn:
+            raise ValueError("RNN is not enabled, cannot use get_minibatches_seq_first")
+
         total_steps = self.n_steps # e.g., [T, N, M, feat_dim] -> T
         if total_steps < data_chunk_length:
             raise ValueError(f"n_steps ({total_steps}) must be >= data_chunk_length ({data_chunk_length})")
@@ -255,6 +348,7 @@ class AgentSpecificRecurrentRolloutStorage:
         mini_batch_size = max(1, max_data_chunks // num_mini_batch)  # e.g., 1600 // 1 = 1600
 
         # Pre-convert and flatten data, collapsing num_agents into the sequence
+        # [T, N, M, feat_dim] -> [N*M*T, feat_dim]
         data = {
             'obs': _transform_data(self.obs[:-1], self.device),
             'global_state': _transform_data(self.global_state[:-1], self.device),
@@ -262,10 +356,14 @@ class AgentSpecificRecurrentRolloutStorage:
             'values': _transform_data(self.values[:-1], self.device),
             'returns': _transform_data(self.returns[:-1], self.device),
             'masks': _transform_data(self.masks[:-1], self.device),
+            'active_masks': _transform_data(self.active_masks[:-1], self.device),
             'old_action_log_probs': _transform_data(self.action_log_probs, self.device),
             'advantages': _transform_data(self.advantages, self.device),
-            'available_actions': _transform_data(self.available_actions[:-1], self.device),
         }
+
+        # Handle available actions specially
+        if self.available_actions is not None:
+            data['available_actions'] = _transform_data(self.available_actions[:-1], self.device)
 
         # Process RNN states - maintain num_layers dimension while flattening agents
         # [T, N, M, num_layers, hidden_size] -> [N, M, T, num_layers, hidden_size] -> [N*M*T, num_layers, hidden_size]
@@ -286,8 +384,8 @@ class AgentSpecificRecurrentRolloutStorage:
         np.random.shuffle(all_starts)
 
         # Generate minibatches
-        for batch_start in range(0, len(all_starts), mini_batch_size):
-            batch_chunk_starts = all_starts[batch_start:batch_start + mini_batch_size]
+        for batch_start in range(0, len(all_starts), mini_batch_size): #(0, 1600, 1600)
+            batch_chunk_starts = all_starts[batch_start:batch_start + mini_batch_size] #all_starts[0:1600]
             if not batch_chunk_starts.size:
                 continue
             
@@ -306,9 +404,14 @@ class AgentSpecificRecurrentRolloutStorage:
                 sequences['actor_rnn_states'].append(data['actor_rnn_states'][start_idx])
                 sequences['critic_rnn_states'].append(data['critic_rnn_states'][start_idx])
 
-            # Stack sequences into proper shapes (seq_len, batch_size, feat_dim) or (num_layers, batch_size, hidden_dim)
+            stack_dims = {
+                'actor_rnn_states': 0,  
+                'critic_rnn_states': 0,
+            }
+
+            # Stack sequences into proper shapes (seq_len, batch_size, feat_dim) or (batch_size, num_layers, hidden_dim)
             batch = {
-                key: torch.stack(sequences[key], dim=1)
+                key: torch.stack(sequences[key], dim=stack_dims.get(key, 1))
                 for key in sequences
             }
 
@@ -322,8 +425,9 @@ class AgentSpecificRecurrentRolloutStorage:
                 batch['values'],
                 batch['returns'],
                 batch['masks'],
+                batch['active_masks'],
                 batch['old_action_log_probs'],
                 batch['advantages'],
-                batch['available_actions']
+                batch['available_actions'] if 'available_actions' in batch else None # Handle optional key
             )
 

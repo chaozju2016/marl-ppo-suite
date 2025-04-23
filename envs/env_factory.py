@@ -34,13 +34,12 @@ def create_env(args, is_eval=False):
     return env
 
 
-def make_env(args, seed=None, rank=None, is_eval=False):
+def make_env(args, rank=None, is_eval=False):
     """
     Helper function to create an environment with a given seed.
 
     Args:
         args: Arguments object containing environment configuration
-        seed: Random seed (currently unused as StarCraft2Env doesn't support seeding)
         rank: Environment rank (for seeding, currently unused)
         is_eval: Whether this is an evaluation environment
 
@@ -67,20 +66,20 @@ def make_env(args, seed=None, rank=None, is_eval=False):
 
     return _thunk
 
-def make_vec_envs(args, seed, num_processes, is_eval=False):
+def make_vec_envs(args, num_processes, is_eval=False):
     """
     Create vectorized environments.
 
     Args:
         args: Arguments object containing environment configuration
-        seed: Random seed
         num_processes: Number of parallel environments
         is_eval: Whether these are evaluation environments
 
     Returns:
         Vectorized environments
     """
-    envs = [make_env(args, seed, i, is_eval=is_eval) for i in range(num_processes)]
+    # Create environment thunks
+    envs = [make_env(args, i, is_eval=is_eval) for i in range(num_processes)]
 
     # If only one environment, use DummyVecEnv for simplicity
     if len(envs) == 1:

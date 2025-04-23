@@ -123,53 +123,6 @@ class EMANormalizer:
         # Return unchanged for other types
         return x
 
-
-class SimpleRewardNormalizer:
-    """A simplified reward normalizer without minimum variance check."""
-    def __init__(self, decay=0.99999, epsilon=1e-5):
-        # Store parameters
-        self.decay = decay  # EMA decay factor
-        self.epsilon = epsilon
-
-        # Initialize statistics
-        self.mean = 0.0
-        self.var = 1.0
-
-        # Cache frequently used values
-        self._one_minus_decay = 1.0 - decay
-
-    def reset(self):
-        """Reset the normalizer."""
-        self.mean = 0.0
-        self.var = 1.0
-
-    def normalize(self, x, update=True):
-        # Direct type check for float (fastest path)
-        if type(x) is float:
-            if update:
-                # Update mean with single-pass EMA
-                delta = x - self.mean
-                self.mean += self._one_minus_decay * delta
-
-                # Update variance with optimized EMA formula
-                self.var = self.decay * self.var + self._one_minus_decay * delta * delta
-
-            # Inline sqrt calculation (faster than np.sqrt for single values)
-            std = (self.var + self.epsilon) ** 0.5
-            return (x - self.mean) / std
-
-        # Fast conversion for numpy arrays
-        if type(x) is np.ndarray and x.size == 1:
-            return self.normalize(float(x.item()), update)
-
-        # Handle lists
-        if type(x) is list and len(x) == 1:
-            return self.normalize(float(x[0]), update)
-
-        # Return unchanged for other types
-        return x
-
-
 # TODO: Try again above one compare learning
 # class FastRewardNormalizer:
 #     """A faster reward normalizer that uses EMA for statistics tracking."""

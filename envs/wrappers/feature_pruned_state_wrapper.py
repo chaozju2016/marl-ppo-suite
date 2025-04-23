@@ -58,6 +58,9 @@ class FeaturePrunedStateWrapper(BaseWrapper):
         self.add_local_obs = False  # Always set to False as we don't need it
         self.add_move_state = False  # Always set to False as we don't need it
 
+        # Get properties from the environment
+        self.timeouts = self.env.timeouts
+
         # Define observation and action spaces for vectorization
         self.observation_space = Box(
             low=-float('inf'),
@@ -85,7 +88,10 @@ class FeaturePrunedStateWrapper(BaseWrapper):
             available_actions: List of available actions for each agent
         """
         # Call the base environment's reset method
-        obs, state = self.env.reset()
+        self.env.reset()
+
+        # Get observations
+        obs = self.get_obs()
 
         # Get available actions for each agent
         available_actions = self.get_avail_actions()
@@ -96,7 +102,7 @@ class FeaturePrunedStateWrapper(BaseWrapper):
             return obs, agent_specific_states, available_actions
         else:
             # Return the original state for all agents
-            return obs, [state] * self.n_agents, available_actions
+            return obs, [self.get_state()] * self.n_agents, available_actions
 
     def step(self, actions):
         """
@@ -130,14 +136,37 @@ class FeaturePrunedStateWrapper(BaseWrapper):
 
         # Format rewards for each agent
         rewards = [[reward]] * self.n_agents
-
+        
+        # Pass additional info
+        info["truncated"] = False
+        
         # Format dones for each agent
         if terminated:
             # If the episode is terminated, all agents are done
             dones = [True] * self.n_agents
+            if self.env.timeouts > self.timeouts:
+                assert (
+                    self.env.timeouts - self.timeouts == 1
+                ), "Change of timeouts unexpected."
+                info["truncated"] = True
+                self.timeouts = self.env.timeouts   
         else:
             # Create a list of done flags for each agent based on death status
             dones = [bool(self.env.death_tracker_ally[agent_id]) for agent_id in range(self.n_agents)]
+        
+        # Pass additional info
+        # battle_won is set to True if the episode is terminated and the agent has won
+        win = self.env.win_counted 
+        lost = self.env.defeat_counted
+        battles_game = self.env.battles_game
+        battles_won = self.env.battles_won
+
+        info.update({
+            "win": win,
+            "lost": lost,
+            "battles_game": battles_game,
+            "battles_won": battles_won,
+        })
 
         return obs, states, rewards, dones, info, available_actions
 

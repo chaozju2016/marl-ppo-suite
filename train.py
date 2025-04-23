@@ -1,7 +1,21 @@
 import argparse
+import atexit
 from runners.mlp_runner import Runner
 from runners.rnn_runner import RecurrentRunner
-from runners.as_vec_rnn_runner import AgentSpecificRecurrentRunner
+from runners.mappo_runner import MAPPORunner
+from utils.sc2_utils import kill_sc2_processes
+
+# Register cleanup function to kill SC2 processes on exit
+def cleanup_sc2_processes():
+    print("\nCleaning up any lingering SC2 processes...")
+    killed = kill_sc2_processes()
+    if killed > 0:
+        print(f"Killed {killed} SC2 processes during cleanup")
+    else:
+        print("No SC2 processes needed to be cleaned up")
+
+# Register the cleanup function to run when the script exits
+atexit.register(cleanup_sc2_processes)
 
 def parse_args():
     """
@@ -11,25 +25,25 @@ def parse_args():
         argparse.Namespace: Parsed arguments
     """
     parser = argparse.ArgumentParser("MAPPO for StarCraft")
-    
+
     # Algorithm parameters
-    parser.add_argument("--algo", type=str, default="mappo_rnn",
+    parser.add_argument("--algo", type=str, default="as_mappo_rnn",
                         choices=["mappo", "mappo_rnn", "as_mappo_rnn"],
                         help="Which algorithm to use")
     parser.add_argument("--seed", type=int, default=1, help="Random seed for numpy/torch")
-    parser.add_argument("--cuda", action='store_false', default=True, 
+    parser.add_argument("--cuda", action='store_false', default=True,
                         help="by default True, will use GPU to train; or else will use CPU;")
     parser.add_argument("--cuda_deterministic",
-                        action='store_false', default=True, 
+                        action='store_false', default=True,
                         help="by default, make sure random seed effective. if set, bypass such function.")
     parser.add_argument("--max_steps", type=int, default=1000000,
                         help="Number of environment steps to train on")
     # NOTE: rollout_threads supported only in as_mappo_rnn
     parser.add_argument("--n_rollout_threads", type=int, default=8,
-                        help="Number of parallel environments")
+                        help="Number of parallel environments (default: 8)")
     parser.add_argument("--n_eval_rollout_threads", type=int, default=1,
-                        help="Number of threads for evaluation")
-  
+                        help="Number of threads for evaluation (default: 1)")
+
 
     # Environment parameters
     parser.add_argument("--map_name", type=str, default="3m",
@@ -40,15 +54,15 @@ def parse_args():
                         help="Whether to include last actions in observations (default: False)")
 
     # Agent ID parameters
-    parser.add_argument("--use_agent_id", action="store_true", default=False,
-        help="Whether to add agent_id to observation (default: False)")
-    
+    parser.add_argument("--use_agent_id", action="store_false", default=True,
+        help="Whether to add agent_id to observation (default: True)")
+
     # Death masking parameters
     parser.add_argument("--use_death_masking", action="store_true", default=False,
         help="Whether to use death masking to exclude dead agents from training (default: True)")
 
     # Agent-specific state parameters
-    parser.add_argument("--use_agent_specific_state", action="store_true", default=False,
+    parser.add_argument("--use_agent_specific_state", action="store_false", default=True,
         help="Whether to use agent-specific global state (default: False)")
     parser.add_argument("--add_distance_state", action="store_true", default=False,
         help="Whether to add distance features to the state (default: False)")
@@ -61,7 +75,7 @@ def parse_args():
     parser.add_argument("--add_enemy_action_state", action="store_true", default=False,
         help="Whether to add enemy action availability to the state (default: False)")
     parser.add_argument("--use_mustalive", action="store_false", default=True,
-        help="Whether to only return non-zero state for alive agents (default: True)")    
+        help="Whether to only return non-zero state for alive agents (default: True)")
 
     # Optimizer parameters
     parser.add_argument("--lr", type=float, default=5e-4,
@@ -76,6 +90,8 @@ def parse_args():
     # Network parameters
     parser.add_argument("--hidden_size", type=int, default=64,
                         help="Dimension of hidden layers")
+    parser.add_argument("--use_rnn", action="store_true", default=False,
+                        help="Whether to use RNN networks (default: False)")
     parser.add_argument("--rnn_layers", type=int, default=1,
                         help="Number of RNN layers")
     parser.add_argument("--data_chunk_length", type=int, default=10,
@@ -97,8 +113,8 @@ def parse_args():
 
 
     # PPO parameters
-    parser.add_argument("--n_steps", type=int, default=60,
-                        help="Number of steps to run in each environment per policy rollout")
+    parser.add_argument("--n_steps", type=int, default=400,
+                        help="Number of steps to run in each environment per policy rollout (default: 400)")
     parser.add_argument("--ppo_epoch", type=int, default=15,
                         help="Number of epochs for PPO")
     parser.add_argument("--use_clipped_value_loss", action="store_false",
@@ -144,11 +160,16 @@ def parse_args():
     parser.add_argument("--replay_dir", type=str, default="./replay",
                         help="Directory to save the replay")
 
+    # Performance monitoring
+    parser.add_argument("--show_performance_metrics", action="store_true", default=False,
+                        help="Show detailed performance metrics during training")
+
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+    runner = None
 
     print("=============================")
     print(f"Training {args.algo.upper()} for StarCraft")
@@ -182,16 +203,48 @@ def main():
     # print(f"Using {'recurrent' if args.use_recurrent_policy else 'MLP'} policy")
     print("=============================")
 
-    if args.algo == "mappo":
-        runner = Runner(args)
-    elif args.algo == "mappo_rnn":
-        runner = RecurrentRunner(args)
-    elif args.algo == "as_mappo_rnn":
-        runner = AgentSpecificRecurrentRunner(args)
-    else:
-        raise ValueError(f"Invalid algorithm: {args.algo}")
+    try:
+        if args.algo == "mappo":
+            runner = Runner(args)
+        elif args.algo == "mappo_rnn":
+            runner = RecurrentRunner(args)
+        elif args.algo == "as_mappo_rnn":
+            runner = MAPPORunner(args)
+        else:
+            raise ValueError(f"Invalid algorithm: {args.algo}")
 
-    runner.run()
+        runner.run()
+    except Exception as e:
+        print(f"Error during execution: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        # Clean up environments even if an error occurs
+        if runner is not None:
+            try:
+                if hasattr(runner, 'envs') and runner.envs is not None:
+                    print("Closing training environments...")
+                    runner.envs.close()
+            except Exception as e:
+                print(f"Error closing training environments: {e}")
+
+            try:
+                if hasattr(runner, 'eval_envs') and runner.eval_envs is not None:
+                    print("Closing evaluation environments...")
+                    runner.eval_envs.close()
+            except Exception as e:
+                print(f"Error closing evaluation environments: {e}")
+
+            try:
+                if hasattr(runner, 'logger') and runner.logger is not None:
+                    print("Closing logger...")
+                    runner.logger.close()
+            except Exception as e:
+                print(f"Error closing logger: {e}")
+
+        # Force kill any remaining SC2 processes
+        print("Ensuring all SC2 processes are terminated...")
+        kill_sc2_processes()
 
 if __name__ == "__main__":
     main()

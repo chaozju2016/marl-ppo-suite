@@ -5,7 +5,7 @@ import torch.nn as nn
 class GRUModule(nn.Module):
     """Reusable GRU module for sequence processing with masking."""
 
-    def __init__(self, input_dim, hidden_dim, num_layers=1, dropout=0.0):
+    def __init__(self, input_dim, hidden_dim, num_layers = 1.0):
         """
         Initialize the reusable GRU module.
 
@@ -13,7 +13,6 @@ class GRUModule(nn.Module):
             input_dim (int): Dimension of the input features
             hidden_dim (int): Dimension of the hidden states
             num_layers (int, optional): Number of layers in the GRU. Defaults to 1.
-            dropout (float, optional): Dropout rate. Defaults to 0.1.
         """
         super(GRUModule, self).__init__()
 
@@ -26,8 +25,8 @@ class GRUModule(nn.Module):
             input_dim,
             hidden_dim,
             num_layers=num_layers,
-            batch_first=False,# (seq_len, batch, input_size)
-            dropout=dropout if num_layers > 1 else 0.0)
+            batch_first=False# (seq_len, batch, input_size)
+            )
 
         # Layer norm after GRU
         self.gru_layer_norm = nn.LayerNorm(hidden_dim)
@@ -46,33 +45,36 @@ class GRUModule(nn.Module):
     def forward(self, x, rnn_states, masks):
         """
         Forward pass through the GRU module with masking.
+        B is batch and its size is n_agents * n_rollout_threads 
 
         Args:
             x: (T, B, input_dim) or (B, input_dim) for single step
-            rnn_states: (num_layers, B, hidden_dim)
+            rnn_states: (B, num_layers, hidden_dim)
             masks: (T, B, 1) or (B, 1) for single step
         """
-        # Assert input shapes
-        if x.dim() == 2:
-            # Single step case: (B, input_dim)
-            assert x.size(1) == self.input_dim, f"Expected input dimension {self.input_dim}, got {x.size(1)}"
-            x = x.view(1, -1, self.input_dim) # (1, B, input_dim)
-        else:
-            # Multi-step case: (T, B, input_dim)
-            assert x.dim() == 3, f"Expected 3D input (T, B, input_dim), got {x.dim()}D"
-            assert x.size(2) == self.input_dim, f"Expected input dimension {self.input_dim}, got {x.size(2)}"
+        # Single step case: (B, input_dim) -> (1, B, input_dim)
+        is_single_step = x.dim() == 2
+        if is_single_step:
+            if __debug__:
+                # Single step case: (B, input_dim)
+                assert x.size(1) == self.input_dim, f"Expected input dimension {self.input_dim}, got {x.size(1)}"
+            x = x.view(1, -1, self.input_dim)
 
-        # Assert RNN states shape
-        assert rnn_states.size(0) == self.num_layers, f"Expected {self.num_layers} RNN layers, got {rnn_states.size(0)}"
-        assert rnn_states.size(2) == self.hidden_dim, f"Expected hidden dimension {self.hidden_dim}, got {rnn_states.size(2)}"
+        if __debug__:
+            if not is_single_step:
+                # Multi-step case: (T, B, input_dim)
+                assert x.dim() == 3, f"Expected 3D input (T, B, input_dim), got {x.dim()}D"
+                assert x.size(2) == self.input_dim, f"Expected input dimension {self.input_dim}, got {x.size(2)}"
+            # Assert RNN states shape
+            assert rnn_states.size(1) == self.num_layers, f"Expected {self.num_layers} RNN layers, got {rnn_states.size(1)}"
+            assert rnn_states.size(2) == self.hidden_dim, f"Expected hidden dimension {self.hidden_dim}, got {rnn_states.size(2)}"
+            # Assert batch sizes match
+            batch_size = x.size(1)
+            assert rnn_states.size(0) == batch_size, f"Batch size mismatch: x has {batch_size}, rnn_states has {rnn_states.size(0)}"
 
-        # Assert batch sizes match
-        batch_size = x.size(1)
-        assert rnn_states.size(1) == batch_size, f"Batch size mismatch: x has {batch_size}, rnn_states has {rnn_states.size(1)}"
+        rnn_states = rnn_states.transpose(0, 1) # (B, num_layers, hidden_dim) -> (num_layers, B, hidden_dim)
 
         # Handle single timestep (evaluation/rollout) case
-        is_single_step = x.size(0) == 1
-
         if is_single_step:
             # Apply mask to RNN states
             temp_states = (rnn_states * masks.view(1, -1, 1)).contiguous() # (num_layers, batch_size, hidden_size)
@@ -81,7 +83,10 @@ class GRUModule(nn.Module):
 
             return self.gru_layer_norm(x), rnn_states
 
+        ##################################
         # Handle Multi-step case (training)
+        ##################################
+        
         seq_len, batch_size = x.shape[:2]
         # Find sequences of zeros in masks for efficient processing
         masks = masks.view(seq_len, batch_size).contiguous() # (T, B, 1) -> (T, B)
@@ -117,20 +122,7 @@ class GRUModule(nn.Module):
         x = torch.cat(outputs, dim=0) # (T, B, hidden_dim)
         x = self.gru_layer_norm(x)
 
-        # Assert output shapes
-        # assert x.size(0) == seq_len, f"Expected output sequence length {seq_len}, got {x.size(0)}"
-        # assert x.size(1) == batch_size, f"Expected output batch size {batch_size}, got {x.size(1)}"
-        # assert x.size(2) == self.hidden_dim, f"Expected output hidden dim {self.hidden_dim}, got {x.size(2)}"
-        # assert rnn_states.size(0) == self.num_layers, f"Expected output RNN layers {self.num_layers}, got {rnn_states.size(0)}"
-        # assert rnn_states.size(1) == batch_size, f"Expected output RNN batch size {batch_size}, got {rnn_states.size(1)}"
-        # assert rnn_states.size(2) == self.hidden_dim, f"Expected output RNN hidden dim {self.hidden_dim}, got {rnn_states.size(2)}"
+        # Transpose back to (B, num_layers, hidden_dim)
+        rnn_states = rnn_states.transpose(0, 1)
 
         return x, rnn_states
-
-
-    def init_hidden(self, batch_size, device):
-        """Initialize hidden states."""
-        return torch.zeros(
-            self.num_layers, batch_size, self.hidden_dim,
-            device=device, dtype=torch.float32
-        )

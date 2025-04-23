@@ -1,3 +1,8 @@
+"""
+Code fot simple single environment algos/mappo_mlp algorithm for SMAC experiments
+"""
+
+
 import torch 
 import torch.nn as nn 
 import torch.nn.functional as F 
