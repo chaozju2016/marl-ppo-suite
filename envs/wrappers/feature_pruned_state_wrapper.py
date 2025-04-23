@@ -55,8 +55,6 @@ class FeaturePrunedStateWrapper(BaseWrapper):
         self.add_enemy_action_state = add_enemy_action_state
         self.use_mustalive = use_mustalive
         self.use_agent_id = use_agent_id
-        self.add_local_obs = False  # Always set to False as we don't need it
-        self.add_move_state = False  # Always set to False as we don't need it
 
         # Get properties from the environment
         self.timeouts = self.env.timeouts
@@ -150,9 +148,12 @@ class FeaturePrunedStateWrapper(BaseWrapper):
                 ), "Change of timeouts unexpected."
                 info["truncated"] = True
                 self.timeouts = self.env.timeouts   
-        else:
+        elif self.use_mustalive:
             # Create a list of done flags for each agent based on death status
             dones = [bool(self.env.death_tracker_ally[agent_id]) for agent_id in range(self.n_agents)]
+        else:
+            # If use_mustalive is False, all agents are not done
+            dones = [False] * self.n_agents
         
         # Pass additional info
         # battle_won is set to True if the episode is terminated and the agent has won
@@ -225,7 +226,7 @@ class FeaturePrunedStateWrapper(BaseWrapper):
             nf_en += 1  # visible
 
         # Add last action features if enabled
-        if self.state_last_action:
+        if self.env.state_last_action:
             nf_al += self.n_actions  # last_action
 
         # Add enemy action availability if enabled
@@ -301,7 +302,7 @@ class FeaturePrunedStateWrapper(BaseWrapper):
         # Add last action if enabled
         if self.env.state_last_action:
             # Get last_action from the environment
-            last_action = getattr(self.env, 'last_action', None)
+            last_action = self.env.last_action
             if last_action is not None:
                 own_feats[own_idx:own_idx + self.n_actions] = last_action[agent_id]
 
@@ -365,12 +366,12 @@ class FeaturePrunedStateWrapper(BaseWrapper):
                 # Add last action if enabled
                 if self.env.state_last_action:
                     # Get last_action from the environment
-                    last_action = getattr(self.env, 'last_action', None)
+                    last_action = self.env.last_action
                     if last_action is not None:
                         ally_state[i, idx:idx + self.n_actions] = last_action[al_id]
 
         # Fill in enemy features
-        for e_id, e_unit in self.enemies.items():
+        for e_id, e_unit in self.env.enemies.items():
             if e_unit.health > 0:
                 e_x = e_unit.pos.x
                 e_y = e_unit.pos.y
