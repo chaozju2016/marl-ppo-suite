@@ -1,5 +1,5 @@
 """
-Code fot simple single environment algos/mappo_rnn algorithm for SMAC experiments
+Code fot simple single environment algos/light_rnn_mappo algorithm for SMAC experiments
 - 
 """
 

@@ -3,12 +3,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from networks.rnn_nets import Actor_RNN, Critic_RNN
+
+from networks.light_rnn_nets import Actor_RNN, Critic_RNN
 from utils.scheduler import LinearScheduler
 from utils.value_normalizers import create_value_normalizer
 from typing import Optional
 
-class RMAPPOAgent:
+class LightRMAPPO:
     """
     Multi-Agent Proximal Policy Optimization (MAPPO) agent implementation with RNN networks.
 

@@ -3,13 +3,13 @@ import time
 import numpy as np
 import torch
 
-from buffers.as_rnn_buffer import AgentSpecificRecurrentRolloutStorage
+from buffers.rollout_storage import RolloutStorage
 from envs import make_vec_envs
 from algos.mappo import MAPPO
 
 
 from utils.logger import Logger
-from utils.reward_normalisation_new import StandardNormalizer, EMANormalizer
+from utils.reward_normalization_new import StandardNormalizer, EMANormalizer
 from utils.transform_tools import flatten_first_dims, unflatten_first_dim
 
 # import wandb
@@ -63,7 +63,7 @@ class MAPPORunner:
                             self.device)
 
         # Create buffer
-        self.buffer = AgentSpecificRecurrentRolloutStorage(
+        self.buffer = RolloutStorage(
             args,
             self.envs.n_agents,
             self.envs.observation_space,

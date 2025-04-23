@@ -1,5 +1,5 @@
 """
-Code fot simple single environment algos/mappo_mlp algorithm for SMAC experiments
+Code fot simple single environment algos/light_mappo algorithm for SMAC experiments
 """
 
 

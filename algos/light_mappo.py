@@ -3,14 +3,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from networks.mlp_nets import Actor_MLP, Critic_MLP
+
+from networks.light_mlp_nets import Actor_MLP, Critic_MLP
 from utils.scheduler import LinearScheduler
 from utils.value_normalizers import create_value_normalizer
 from typing import Optional
 
-class MAPPOAgent:
+class LightMAPPO:
     """
-    Multi-Agent Proximal Policy Optimization (MAPPO) agent implementation.
+    Multi-Agent Proximal Policy Optimization (MAPPO) agent implementation (MLP only)
 
     This agent implements the MAPPO algorithm for multi-agent reinforcement learning
     with centralized training and decentralized execution.

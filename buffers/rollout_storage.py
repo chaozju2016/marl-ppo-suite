@@ -26,7 +26,7 @@ def _transform_data(data_np: np.ndarray, device: torch.device, sequence_first: b
         return torch.tensor(reshaped_data, dtype=torch.float32).to(device)
 
 
-class AgentSpecificRecurrentRolloutStorage:
+class RolloutStorage:
     """
     Rollout storage for collecting multi-agent experiences during training.
     Designed for MAPPO with n-step returns and RNN-based policies.
