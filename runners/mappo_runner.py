@@ -377,6 +377,7 @@ class MAPPORunner:
             values=values,  # (n_rollout_threads, n_agents, 1)
             rewards=rewards,  # (n_rollout_threads, n_agents, 1)
             masks=masks,  # (n_rollout_threads, n_agents, 1)
+            active_masks=active_masks,  # (n_rollout_threads, n_agents, 1)
             truncates=truncates,  # (n_rollout_threads, n_agents, 1)
             available_actions=available_actions,  # (n_rollout_threads, n_agents, n_actions) or None
             actor_rnn_states=actor_rnn_states,  # (num_layers, n_rollout_threads, n_agents, hidden_size)
@@ -530,7 +531,7 @@ class MAPPORunner:
                 flatten_eval_rnn_states,
                 flatten_masks,
                 flatten_available_actions,
-                deterministic=False
+                deterministic=True
             )
             # Reshape actions and values
             shape = (self.args.n_eval_rollout_threads, self.eval_envs.n_agents)
