@@ -89,7 +89,7 @@ class MAPPORunner:
 
         run_name = "".join(run_name)
         env_name = "sc2_" + args.map_name
-        self.logger = Logger(run_name=run_name, env=env_name, algo="NEW_MAPPO")
+        self.logger = Logger(run_name=run_name, env=env_name, algo="MAPPO")
 
         # Log hyperparameters
         self.logger.log_hyperparameters({

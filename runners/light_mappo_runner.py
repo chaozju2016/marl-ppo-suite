@@ -76,12 +76,12 @@ class LightMAPPORunner:
             f"minibatch{args.num_mini_batch}_epochs{args.ppo_epoch}_"
             f"gamma{args.gamma}_gae{args.gae_lambda}_"
             f"clip{args.clip_param}_dmask{args.use_death_masking}_aid{args.use_agent_id}_"
-            f"as{args.use_agent_specific_state}_{int(time.time())}"
+            f"{int(time.time())}"
         )
 
         run_name = "".join(run_name)
         env_name = "sc2_" + args.map_name
-        self.logger = Logger(run_name=run_name, env=env_name, algo="MAPPO")
+        self.logger = Logger(run_name=run_name, env=env_name, algo="Light_MAPPO")
         # Log hyperparameters
         self.logger.log_hyperparameters({
             "env_name": env_name,
@@ -89,7 +89,6 @@ class LightMAPPORunner:
             "difficulty": args.difficulty,
             "use_agent_id": args.use_agent_id,
             "death_masking": args.use_death_masking,
-            "use_agent_specific_state": args.use_agent_specific_state,
             "lr": args.lr,
             "optimizer_eps": args.optimizer_eps,
             "use_linear_lr_decay": args.use_linear_lr_decay,
@@ -115,11 +114,7 @@ class LightMAPPORunner:
             "max_grad_norm": args.max_grad_norm,
             "use_eval": args.use_eval,
             "eval_interval": args.eval_interval,
-            "eval_episodes": args.eval_episodes,
-            "save_interval": args.save_interval,
-            "save_dir": args.save_dir,
-            "save_replay": args.save_replay,
-            "replay_dir": args.replay_dir
+            "eval_episodes": args.eval_episodes
         })
 
 
@@ -345,10 +340,9 @@ class LightMAPPORunner:
         # Add model saving
         if win_rate > self.best_win_rate:
             self.best_win_rate = win_rate
-            if self.args.save_dir:
-                save_path = os.path.join(self.logger.dir_name, f"best-torch.model")
-                self.agent.save(save_path)
-                print(f"Saved best model with win rate {win_rate:.2f} to {save_path}")
+            save_path = os.path.join(self.logger.dir_name, f"best-torch.model")
+            self.agent.save(save_path)
+            print(f"Saved best model with win rate {win_rate:.2f} to {save_path}")
 
         self.logger.add_scalar('eval/rewards', mean_rewards, self.total_steps)
         self.logger.add_scalar('eval/win_rate', win_rate, self.total_steps)
