@@ -169,12 +169,8 @@ class MAPPO:
                 rnn_states = torch.tensor(rnn_states, dtype=torch.float32).to(self.device)
                 masks = torch.tensor(masks, dtype=torch.float32).to(self.device)
             else:
-                # Option 1: Use None if your actor handles None values
                 rnn_states = None
                 masks = None
-                # Option 2: Create empty tensors if your actor expects tensors
-                # rnn_states_tensor = torch.zeros((obs.size(0), self.rnn_layers, self.hidden_size), device=self.device)
-                # masks_tensor = torch.ones((obs.size(0), 1), device=self.device)
 
             if available_actions is not None:
                 available_actions = torch.tensor(available_actions, dtype=torch.float32).to(self.device) 

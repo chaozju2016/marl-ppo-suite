@@ -5,16 +5,16 @@ from runners.mappo_runner import MAPPORunner
 from utils.sc2_utils import kill_sc2_processes
 
 # Register cleanup function to kill SC2 processes on exit
-def cleanup_sc2_processes():
-    print("\nCleaning up any lingering SC2 processes...")
-    killed = kill_sc2_processes()
-    if killed > 0:
-        print(f"Killed {killed} SC2 processes during cleanup")
-    else:
-        print("No SC2 processes needed to be cleaned up")
+# def cleanup_sc2_processes():
+#     print("\nCleaning up any lingering SC2 processes...")
+#     killed = kill_sc2_processes()
+#     if killed > 0:
+#         print(f"Killed {killed} SC2 processes during cleanup")
+#     else:
+#         print("No SC2 processes needed to be cleaned up")
 
-# Register the cleanup function to run when the script exits
-atexit.register(cleanup_sc2_processes)
+# # Register the cleanup function to run when the script exits
+# atexit.register(cleanup_sc2_processes)
 
 def parse_args():
     """
@@ -72,8 +72,9 @@ def parse_args():
         help="Whether to add enemy action availability to the state (default: False)")
     
     # SMACv1 state parameters 
-    parser.add_argument("--state_type", type=str, default="FP", choices=["FP", "EP"],
-        help="Type of state to use: 'FP' (Feature Pruned AS) or 'EP' (Environment Provided)")
+    parser.add_argument("--state_type", type=str, default="FP", choices=["FP", "EP", "AS"],
+        help="Type of state to use in critic: 'FP' (Feature Pruned AS) or "
+        "'EP' (Environment Provided) or 'AS' (Agent-Specific - observation + state / not implemented)")
 
     # Optimizer parameters
     parser.add_argument("--lr", type=float, default=5e-4,
@@ -227,9 +228,9 @@ def main():
             except Exception as e:
                 print(f"Error closing logger: {e}")
 
-        # Force kill any remaining SC2 processes
-        print("Ensuring all SC2 processes are terminated...")
-        kill_sc2_processes()
+        # # Force kill any remaining SC2 processes
+        # print("Ensuring all SC2 processes are terminated...")
+        # kill_sc2_processes()
 
 if __name__ == "__main__":
     main()
@@ -237,3 +238,4 @@ if __name__ == "__main__":
 
 
 
+ 

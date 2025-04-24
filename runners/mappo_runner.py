@@ -202,7 +202,13 @@ class MAPPORunner:
 
         # Store initial observations and states
         self.buffer.obs[0] = np.array(obs)  # (rollout_threads, n_agents, obs_shape)
-        self.buffer.global_state[0] = np.array(states)  # (rollout_threads, n_agents, state_shape)
+
+        # Store state based on type
+        if hasattr(self.buffer, "env_state"):
+            self.buffer.env_state[0] = np.array(states)  # (rollout_threads, state_shape)
+        else:
+            self.buffer.agent_state[0] = np.array(states)  # (rollout_threads, n_agents, state_shape)
+
         self.buffer.available_actions[0] = np.array(available_actions)  # (rollout_threads, n_agents, n_actions)
 
     def collect_rollouts(self):
@@ -223,7 +229,7 @@ class MAPPORunner:
         for step in range(self.args.n_steps):
             # Prepare basic observations
             flatten_obs = flatten_first_dims(self.buffer.obs[step])  # (n_rollout_threads*n_agents, obs_shape)
-            flatten_share_obs = flatten_first_dims(self.buffer.global_state[step])  # (n_rollout_threads*n_agents, state_shape)
+            flatten_share_obs = flatten_first_dims(self.buffer.get_state(step, replicate=True))  # (n_rollout_threads*n_agents, state_shape)
             flatten_masks = flatten_first_dims(self.buffer.masks[step])  # (n_rollout_threads*n_agents, 1)
 
             # Handle available actions if present
@@ -236,7 +242,7 @@ class MAPPORunner:
             # Prepare RNN states if using RNN
             if self.args.use_rnn:
                 flatten_actor_rnn_states = flatten_first_dims(self.buffer.actor_rnn_states[step])
-                flatten_critic_rnn_states = flatten_first_dims(self.buffer.critic_rnn_states[step])
+                flatten_critic_rnn_states = flatten_first_dims(self.buffer.get_critic_rnn(step, replicate=True))
             else:
                 flatten_actor_rnn_states = None
                 flatten_critic_rnn_states = None
@@ -296,7 +302,7 @@ class MAPPORunner:
                 # rollout_data['episode_rewards'].extend(self.episode_rewards[done_indices].tolist())
                 # self.episode_length[done_indices] = 0
                 # self.episode_rewards[done_indices] = 0
-                      
+
 
             # Insert collected data
             data = (
@@ -371,7 +377,7 @@ class MAPPORunner:
         # Store trajectory in buffer
         self.buffer.insert(
             obs=obs,  # (n_rollout_threads, n_agents, n_obs)
-            global_state=share_obs,  # (n_rollout_threads, n_agents, n_state)
+            global_state=share_obs,  # (n_rollout_threads, n_agents, n_state) or (n_rollout_threads, n_state)
             actions=actions,  # (n_rollout_threads, n_agents, 1)
             action_log_probs=action_log_probs,  # (n_rollout_threads, n_agents, 1)
             values=values,  # (n_rollout_threads, n_agents, 1)
@@ -380,8 +386,8 @@ class MAPPORunner:
             active_masks=active_masks,  # (n_rollout_threads, n_agents, 1)
             truncates=truncates,  # (n_rollout_threads, n_agents, 1)
             available_actions=available_actions,  # (n_rollout_threads, n_agents, n_actions) or None
-            actor_rnn_states=actor_rnn_states,  # (num_layers, n_rollout_threads, n_agents, hidden_size)
-            critic_rnn_states=critic_rnn_states,  # (num_layers, n_rollout_threads, n_agents, hidden_size)
+            actor_rnn_states=actor_rnn_states,  # (n_rollout_threads, n_agents, num_layers, hidden_size)
+            critic_rnn_states=critic_rnn_states,  # (n_rollout_threads, n_agents, num_layers, hidden_size)
         )
 
     def compute_returns(self):
@@ -389,8 +395,8 @@ class MAPPORunner:
         Compute returns and advantages for the collected trajectories.
         """
         next_value, _ = self.agent.get_values(
-            flatten_first_dims(self.buffer.global_state[-1]),
-            flatten_first_dims(self.buffer.critic_rnn_states[-1]) if self.args.use_rnn else None,
+            flatten_first_dims(self.buffer.get_state(-1, replicate=True)),
+            flatten_first_dims(self.buffer.get_critic_rnn(-1, replicate=True)) if self.args.use_rnn else None,
             flatten_first_dims(self.buffer.masks[-1]))
 
         self.buffer.compute_returns_and_advantages(
@@ -411,11 +417,11 @@ class MAPPORunner:
         # Extract episode lengths and rewards for done environments
         episode_lens = self.episode_length[done_indices]
         episode_rews = self.episode_rewards[done_indices]
-        
+
         # Reset episode lengths and rewards for done environments
         self.episode_length[done_indices] = 0
         self.episode_rewards[done_indices] = 0
-        
+
         # Log metrics
         self.logger.add_scalar('train/length', np.mean(episode_lens), current_step)
         self.logger.add_scalar('train/rewards', np.mean(episode_rews), current_step)
