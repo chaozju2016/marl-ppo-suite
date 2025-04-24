@@ -2,6 +2,15 @@ import numpy as np
 import torch
 from typing import Union, Tuple, Any
 
+def n2t(x, *, dtype=torch.float32, device=None):
+    """
+    Behaves like torch.as_tensor but silently copies once if the NumPy
+    array is read-only.  No warning, no unnecessary reallocations.
+    """
+    if isinstance(x, np.ndarray) and not x.flags.writeable:
+        x = np.array(x, copy=True)              # one cheap copy
+    return torch.as_tensor(x, dtype=dtype, device=device)
+
 def flatten_first_dims(data: Union[np.ndarray, torch.Tensor], n_dims: int = 2) -> Union[np.ndarray, torch.Tensor]:
     """
     Efficiently flatten the first n dimensions of an array/tensor while preserving the rest.

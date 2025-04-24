@@ -47,6 +47,7 @@ class MAPPORunner:
 
         # Store args for creating evaluation environment later
         self.args = args
+        self.args.n_agents = self.envs.n_agents
 
         # Get environment info
         print(f"n_agents: {self.envs.n_agents}, "

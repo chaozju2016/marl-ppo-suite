@@ -39,6 +39,8 @@ class MAPPO:
         self._validate_inputs(args, obs_dim, state_dim, action_dim)
 
         self.args = args
+        self.state_type = args.state_type # [FP, EP, AS(not implemented)]
+        self.n_agents = args.n_agents
         self.device = device
 
         # Initialize core components
@@ -58,7 +60,7 @@ class MAPPO:
         """Validate input parameters."""
         if obs_dim <= 0 or state_dim <= 0 or action_dim <= 0:
             raise ValueError(f"Dimensions must be positive integers: obs_dim={obs_dim}, state_dim={state_dim}, action_dim={action_dim}")
-        required_attrs = ['use_rnn', 'lr', 'clip_param', 'ppo_epoch',
+        required_attrs = ['n_agents', 'use_rnn', 'state_type', 'lr', 'clip_param', 'ppo_epoch',
                          'num_mini_batch']
         missing = [attr for attr in required_attrs if not hasattr(args, attr)]
         if missing:
@@ -206,6 +208,38 @@ class MAPPO:
                                       if RNN is disabled
         """
         with torch.no_grad():
+            # Handle EP state type NOTE: could be not so important
+            if self.state_type == "EP":
+                B, n_agents = state.shape[0], self.n_agents
+                assert B % n_agents == 0, "batch not divisible by n_agents"
+                N = B // n_agents # n_rollout_threads(n_envs)
+
+                state_env = torch.tensor(state,dtype=torch.float32,
+                                        device=self.device).view(N, n_agents, -1)[:, 0] # (n_envs, s_dim)
+                
+                if self.use_rnn: 
+                    if rnn_states is None or masks is None:
+                        raise ValueError("rnn_states/masks missing with RNN enabled")
+                    h_env = torch.tensor(rnn_states, dtype=torch.float32,
+                                            device=self.device).view(N,
+                                                                    n_agents,
+                                                                    *rnn_states.shape[1:])[:, 0]
+                    m_env = torch.tensor(masks, dtype=torch.float32,
+                                            device=self.device).view(N, n_agents, 1)[:, 0]
+                else:
+                    h_env, m_env = None, None
+       
+                values, rnn_states_out = self.critic(state_env, h_env, m_env) # (n_envs,1)
+
+                # broadcast back so downstream code (GAE, PPO minibatching) stays unchanged
+                values  = values.repeat_interleave(n_agents, dim=0).cpu().numpy()
+                if rnn_states_out is not None:
+                    rnn_states_out = rnn_states_out.repeat_interleave(n_agents, dim=0).cpu().numpy()
+
+                return values, rnn_states_out
+            
+            # ----- compute-each-agent branch ---------------------------------------
+
             # Convert state to tensor
             state = torch.tensor(state, dtype=torch.float32).to(self.device)
         
@@ -216,7 +250,6 @@ class MAPPO:
                 rnn_states = torch.tensor(rnn_states, dtype=torch.float32).to(self.device)
                 masks = torch.tensor(masks, dtype=torch.float32).to(self.device)
             else:
-                # Option 1: Use None if your critic handles None values
                 rnn_states = None
                 masks = None
 
@@ -257,9 +290,10 @@ class MAPPO:
             actor_h0,
             masks,
             available_actions)
+        
         values, _ = self.critic(state, critic_h0, masks)
-
         return values, action_log_probs, dist_entropy
+
 
     def compute_value_loss(self, values, value_preds_batch, returns_batch):
         """
