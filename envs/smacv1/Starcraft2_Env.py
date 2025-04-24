@@ -594,9 +594,7 @@ class StarCraft2Env(MultiAgentEnv):
                     self.get_state_agent(agent_id) for agent_id in range(self.n_agents)
                 ]
             elif self.use_global_state:
-                global_state = [
-                    self.get_global_state() for agent_id in range(self.n_agents)
-                ]
+                global_state = self.get_global_state()
             else:
                 global_state = [
                     self.get_state(agent_id) for agent_id in range(self.n_agents)
