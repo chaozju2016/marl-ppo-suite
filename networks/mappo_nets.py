@@ -57,11 +57,16 @@ class Actor(nn.Module):
             self.feature_norm = nn.LayerNorm(obs_dim)
 
         # MLP Layers
-        self.mlp = nn.Sequential(*[
-            nn.Linear(obs_dim, self.hidden_size),
-            nn.ReLU(),
-            nn.LayerNorm(self.hidden_size),
-        ] * self.fc_layers)
+        layers = []
+        in_dim = obs_dim
+        for _ in range(self.fc_layers):
+            layers += [
+                nn.Linear(in_dim, self.hidden_size),
+                nn.ReLU(),
+                nn.LayerNorm(self.hidden_size),
+            ]
+            in_dim = self.hidden_size
+        self.mlp = nn.Sequential(*layers)
 
         # RNN Layer (GRU)
         if self.use_rnn:
@@ -202,11 +207,16 @@ class Critic(nn.Module):
                 self.feature_norm = nn.LayerNorm(cent_obs_dim)
 
             # MLP Layers
-            self.mlp = nn.Sequential(*[
-                nn.Linear(cent_obs_dim, self.hidden_size),
-                nn.ReLU(),
-                nn.LayerNorm(self.hidden_size),
-            ] * self.fc_layers)
+            layers = []
+            in_dim = cent_obs_dim
+            for _ in range(self.fc_layers):
+                layers += [
+                    nn.Linear(in_dim, self.hidden_size),
+                    nn.ReLU(),
+                    nn.LayerNorm(self.hidden_size),
+                ]
+                in_dim = self.hidden_size
+            self.mlp = nn.Sequential(*layers)
 
             # RNN Layer (GRU)
             if self.use_rnn:

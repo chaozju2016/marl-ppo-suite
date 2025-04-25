@@ -79,7 +79,7 @@ def parse_args():
                         help="Number of RNN layers")
     parser.add_argument("--data_chunk_length", type=int, default=10,
                         help="Time length of chunks used to train a recurrent_policy")
-    parser.add_argument("--fc_layers", type=int, default=1,
+    parser.add_argument("--fc_layers", type=int, default=2,
                         help="Number of fc layers in actor/critic network")
     parser.add_argument("--actor_gain", type=float, default=0.01,
                         help="Gain of the actor final linear layer")

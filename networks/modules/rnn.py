@@ -5,7 +5,7 @@ import torch.nn as nn
 class GRUModule(nn.Module):
     """Reusable GRU module for sequence processing with masking."""
 
-    def __init__(self, input_dim, hidden_dim, num_layers = 1.0):
+    def __init__(self, input_dim, hidden_dim, num_layers = 1):
         """
         Initialize the reusable GRU module.
 
