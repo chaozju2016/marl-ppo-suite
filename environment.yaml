@@ -7,7 +7,6 @@ dependencies:
   - python=3.11
   - pytorch>=2.0.0
   - torchvision
-  - cudatoolkit # For GPU support
   - pip
   - pip:
       # Core dependencies
@@ -15,10 +14,12 @@ dependencies:
       - matplotlib
       - pandas
       - tensorboard
+      - cloudpickle>=2.2.0
 
       # RL environments
       - pysc2>=3.0.0
-      - smac>=1.0.0
+      - git+https://github.com/oxwhirl/smac.git
+      - git+https://github.com/oxwhirl/smacv2.git
       - gymnasium
 
       # Utilities

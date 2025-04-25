@@ -1,14 +1,12 @@
 """
 Environment factory for creating StarCraft 2 environments with various wrappers.
 """
-from smac.env import StarCraft2Env
-from envs.smacv1.Starcraft2_Env import StarCraft2Env as SMACv1Env
 from envs.env_vectorization import SubprocVecEnv, DummyVecEnv
-from envs.wrappers import AgentIDWrapper, DeathMaskingWrapper, FeaturePrunedStateWrapper
 
 
 def create_env(args, is_eval=False):
     """
+    LightMappo version only
     Create a StarCraft 2 environment with the specified wrappers based on arguments.
 
     Args:
@@ -19,6 +17,8 @@ def create_env(args, is_eval=False):
     Returns:
         env: The wrapped environment
     """
+    from smac.env import StarCraft2Env
+    from envs.wrappers import AgentIDWrapper, DeathMaskingWrapper
     # Create base StarCraft2Env with safe defaults
     env = StarCraft2Env(map_name=args.map_name, difficulty=args.difficulty, obs_last_action=args.obs_last_actions)
 
@@ -49,26 +49,42 @@ def make_env(args, rank=None, is_eval=False):
     """
     def _thunk():
         
-        if args.use_fp_wrapper:
-            env = StarCraft2Env(map_name=args.map_name, difficulty=args.difficulty, obs_last_action=args.obs_last_actions)
+        env_name = args.env_name
 
-            env = FeaturePrunedStateWrapper(
-                env,
-                use_agent_specific_state=args.use_agent_specific_state,
-                add_distance_state=args.add_distance_state,
-                add_xy_state=args.add_xy_state,
-                add_visible_state=args.add_visible_state,
-                add_center_xy=args.add_center_xy,
-                add_enemy_action_state=args.add_enemy_action_state,
-                use_mustalive=args.use_mustalive,
-                use_agent_id=args.use_agent_id
-            )
+        if env_name == "smacv1":
+            if args.use_fp_wrapper:
+                # Legacy Version using wrapper.
+                from smac.env import StarCraft2Env
+                from envs.wrappers import FeaturePrunedStateWrapper
+
+                env = StarCraft2Env(map_name=args.map_name)
+
+                env = FeaturePrunedStateWrapper(
+                    env,
+                    use_agent_specific_state=args.use_agent_specific_state,
+                    add_distance_state=args.add_distance_state,
+                    add_xy_state=args.add_xy_state,
+                    add_visible_state=args.add_visible_state,
+                    add_center_xy=args.add_center_xy,
+                    add_enemy_action_state=args.add_enemy_action_state,
+                    use_mustalive=args.use_mustalive,
+                    use_agent_id=args.use_agent_id
+                )
+            else: 
+                # New Version using SMACv1Env.
+                from envs.smacv1.Starcraft2_Env import StarCraft2Env as SMACv1Env
+
+                env = SMACv1Env(
+                    map_name=args.map_name, 
+                    difficulty=args.difficulty,
+                    state_type= args.state_type
+                )
+        elif env_name == "smacv2":
+            from envs.smacv2 import SMACv2Env
+            
+            env = SMACv2Env(args)
         else:
-            env = SMACv1Env(
-                map_name=args.map_name, 
-                difficulty=args.difficulty,
-                state_type= args.state_type
-            )
+            raise ValueError(f"Unknown environment name: {env_name}")
 
         return env
 

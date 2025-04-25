@@ -89,18 +89,15 @@ class MAPPORunner:
         )
 
         run_name = "".join(run_name)
-        env_name = "sc2_" + args.map_name
+        env_name = args.env_name + "_" + args.map_name
         self.logger = Logger(run_name=run_name, env=env_name, algo="MAPPO")
 
         # Log hyperparameters
         self.logger.log_hyperparameters({
             "env_name": env_name,
             "map_name": args.map_name,
-            "difficulty": args.difficulty,
             "use_rnn": args.use_rnn,
             "state_type": args.state_type,
-            "use_fp_wrapper": args.use_fp_wrapper,
-            "use_agent_specific_state": args.use_agent_specific_state,
             "lr": args.lr,
             "optimizer_eps": args.optimizer_eps,
             "use_linear_lr_decay": args.use_linear_lr_decay,

@@ -499,9 +499,22 @@ class StarCraft2Env(MultiAgentEnv):
         return local_obs, global_state, available_actions
 
     def load_state_config(self, state_type):
-        # Look for the config file in the same directory as this file
+        """
+        Load state configuration from YAML file.
+
+        Args:
+            state_type: The type of state configuration to load (e.g., "FP" or "EP")
+
+        Returns:
+            Dictionary containing the state configuration
+
+        Raises:
+            FileNotFoundError: If the configuration file cannot be found
+        """
+        # Load only from the config directory
         current_dir = osp.dirname(osp.abspath(__file__))
-        state_config_path = osp.join(current_dir, f"{state_type}.yaml")
+        config_dir = osp.join(current_dir, "config")
+        state_config_path = osp.join(config_dir, f"{state_type}.yaml")
 
         # Check if the file exists
         if not osp.exists(state_config_path):

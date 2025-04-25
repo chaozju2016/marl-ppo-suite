@@ -4,18 +4,6 @@ import atexit
 from runners.mappo_runner import MAPPORunner
 from utils.sc2_utils import kill_sc2_processes
 
-# Register cleanup function to kill SC2 processes on exit
-# def cleanup_sc2_processes():
-#     print("\nCleaning up any lingering SC2 processes...")
-#     killed = kill_sc2_processes()
-#     if killed > 0:
-#         print(f"Killed {killed} SC2 processes during cleanup")
-#     else:
-#         print("No SC2 processes needed to be cleaned up")
-
-# # Register the cleanup function to run when the script exits
-# atexit.register(cleanup_sc2_processes)
-
 def parse_args():
     """
     Parse command line arguments for MAPPO training.
@@ -42,6 +30,7 @@ def parse_args():
     parser.add_argument("--n_eval_rollout_threads", type=int, default=1,
                         help="Number of threads for evaluation (default: 1)")
 
+
     # Environment parameters
     parser.add_argument("--env_name", type=str, default="smacv1",
                         choices=["smacv1", "smacv2"],
@@ -49,16 +38,30 @@ def parse_args():
     parser.add_argument("--map_name", type=str, default="3m",
                         help="Which SMAC map to run on")
 
-    # State parameters 
+    # FP_AS state parameters 
+    parser.add_argument("--use_fp_wrapper", action="store_false", default=True,
+        help="Whether to add enemy action availability to the state (default: False)")
+    parser.add_argument("--use_agent_id", action="store_false", default=True,
+        help="Whether to add agent_id to observation (default: True)")
+    parser.add_argument("--use_mustalive", action="store_false", default=True,
+        help="Whether to only return non-zero state for alive agents (default: True)")
+    parser.add_argument("--use_agent_specific_state", action="store_false", default=True,
+        help="Whether to use agent-specific global state (default: False)")
+    parser.add_argument("--add_distance_state", action="store_true", default=False,
+        help="Whether to add distance features to the state (default: False)")
+    parser.add_argument("--add_xy_state", action="store_true", default=False,
+        help="Whether to add relative x,y coordinates to the state (default: False)")
+    parser.add_argument("--add_visible_state", action="store_true", default=False,
+        help="Whether to add visibility information to the state (default: False)")
+    parser.add_argument("--add_center_xy", action="store_false", default=True,
+        help="Whether to add center-relative coordinates to the state (default: True)")
+    parser.add_argument("--add_enemy_action_state", action="store_true", default=False,
+        help="Whether to add enemy action availability to the state (default: False)")
+    
+    # SMACv1 state parameters 
     parser.add_argument("--state_type", type=str, default="EP", choices=["FP", "EP", "AS"],
-        help="Type of state to use in critic: 'FP' (Feature Pruned AS only Smacv1) or "
+        help="Type of state to use in critic: 'FP' (Feature Pruned AS) or "
         "'EP' (Environment Provided) or 'AS' (Agent-Specific - observation + state / not implemented)")
-
-    # SMACv2 state parameters TODO:Implements
-    parser.add_argument("--use_death_masking", action="store_false", default=True,
-        help="Whether to use SMACv2 death masking (default: True)")
-    parser.add_argument("--use_agent_id", action="store_true", default=False,
-        help="Whether to use SMACv2 agent ID (default: False)")
 
     # Optimizer parameters
     parser.add_argument("--lr", type=float, default=5e-4,
@@ -152,7 +155,19 @@ def main():
     print(f"Algorithm: {args.algo}")
     print(f"Reward Norm: {args.use_reward_norm} ({args.reward_norm_type})")
     print(f"Value Norm: {args.use_value_norm} ({args.value_norm_type})")
-    print(f"State Type: {args.state_type}")
+
+    if args.use_fp_wrapper:
+        print("\nFeature Pruned AS State Parameters:")
+        print(f"  Use Agent-Specific State: {args.use_agent_specific_state}")
+        print(f"  Add Distance State: {args.add_distance_state}")
+        print(f"  Add XY State: {args.add_xy_state}")
+        print(f"  Add Visible State: {args.add_visible_state}")
+        print(f"  Add Center XY: {args.add_center_xy}")
+        print(f"  Add Enemy Action State: {args.add_enemy_action_state}")
+        print(f"  Use Must Alive: {args.use_mustalive}")
+        print(f"  Add Agent ID: {args.use_agent_id}")
+    else:
+        print(f"State Type: {args.state_type}")
 
     print("\nTraining Parameters:")
     print(f" Rollout Threads: {args.n_rollout_threads}")
@@ -198,10 +213,6 @@ def main():
                     runner.logger.close()
             except Exception as e:
                 print(f"Error closing logger: {e}")
-
-        # # Force kill any remaining SC2 processes
-        # print("Ensuring all SC2 processes are terminated...")
-        # kill_sc2_processes()
 
 if __name__ == "__main__":
     main()
