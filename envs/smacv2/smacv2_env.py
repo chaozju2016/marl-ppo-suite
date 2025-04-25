@@ -144,6 +144,7 @@ class SMACv2Env:
             "lost": self.env.env.defeat_counted,
             "battles_game": self.env.env.battles_game,
             "battles_won": self.env.env.battles_won,
+            "battle_won": self.env.env.win_counted,  # Add this key for compatibility with mappo_runner.py
         })
 
         return obs, state, rewards, dones, info, available_actions

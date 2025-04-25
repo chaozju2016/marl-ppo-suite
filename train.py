@@ -55,10 +55,10 @@ def parse_args():
         "'EP' (Environment Provided) or 'AS' (Agent-Specific - observation + state / not implemented)")
 
     # SMACv2 state parameters
-    parser.add_argument("--use_death_masking", action="store_false", default=True,
-        help="Whether to use SMACv2 death masking (default: True)")
+    parser.add_argument("--use_death_masking", action="store_true", default=False,
+        help="Whether to use SMACv2 death masking (default: False)") # will make sure critic see zeros too
     parser.add_argument("--use_agent_id", action="store_true", default=False,
-        help="Whether to use SMACv2 agent ID (default: False)")
+        help="Whether to use SMACv2 agent ID (default: False)") # Doesn't make sense, because Randomness.
 
     # Optimizer parameters
     parser.add_argument("--lr", type=float, default=5e-4,
@@ -128,7 +128,7 @@ def parse_args():
     # Evaluation parameters
     parser.add_argument("--use_eval", action="store_false",
                         help="Evaluate the model during training (default: True)")
-    parser.add_argument("--eval_interval", type=int, default=5000,
+    parser.add_argument("--eval_interval", type=int, default=10000,
                         help="Evaluate the model every eval_interval steps")
     parser.add_argument("--eval_episodes", type=int, default=32,
                         help="Number of episodes for evaluation")
