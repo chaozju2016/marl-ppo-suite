@@ -503,7 +503,8 @@ class StarCraft2Env(MultiAgentEnv):
         Load state configuration from YAML file.
 
         Args:
-            state_type: The type of state configuration to load (e.g., "FP" or "EP")
+            state_type: The type of state configuration to load (e.g., "FP", "EP", or "AS")
+                        Note: "AS" (Agent-Specific) defaults to "EP" configuration
 
         Returns:
             Dictionary containing the state configuration
@@ -511,6 +512,11 @@ class StarCraft2Env(MultiAgentEnv):
         Raises:
             FileNotFoundError: If the configuration file cannot be found
         """
+        # If state_type is "AS", default to "EP" configuration
+        if state_type == "AS":
+            state_type = "EP"
+            print(f"Using EP configuration for AS state type")
+
         # Load only from the config directory
         current_dir = osp.dirname(osp.abspath(__file__))
         config_dir = osp.join(current_dir, "config")

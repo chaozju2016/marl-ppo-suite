@@ -39,7 +39,7 @@ class MAPPO:
         self._validate_inputs(args, obs_dim, state_dim, action_dim)
 
         self.args = args
-        self.state_type = args.state_type # [FP, EP, AS(not implemented)]
+        self.state_type = args.state_type # [FP, EP, AS]
         self.n_agents = args.n_agents
         self.device = device
 
@@ -99,6 +99,16 @@ class MAPPO:
             action_space,
             self.device
         )
+
+        if self.state_type == "AS":
+            # Concatenate observation and state spaces for AS state type
+            concat_dim = obs_space.shape[0] + state_space.shape[0]
+            state_space = gymnasium.spaces.Box(
+                low=-np.inf,
+                high=np.inf,
+                shape=(concat_dim,),
+                dtype=np.float32
+            )
 
         self.critic = Critic(
             self.args,
@@ -191,13 +201,15 @@ class MAPPO:
 
         return actions, action_log_probs, rnn_states_out
 
-    def get_values(self, state, rnn_states=None, masks=None):
+    def get_values(self, state, obs, active_masks, rnn_states=None, masks=None):
         """
         Get values from the critic network.
         Batched version -> Batch(B) = (n_rollout_threads, n_agents) = n_rollout_threads * n_agents
 
         Args:
             state (np.ndarray): State tensor #(B, state_shape)
+            obs (np.ndarray): Observation tensor #(B, obs_shape)
+            active_masks (np.ndarray): Active masks tensor #(B, 1) - used for death masking in (AS)
             rnn_states (np.ndarray, optional): RNN states tensor. Required when RNN is enabled,
                                           can be None otherwise. #(B, n_layers, hidden_size)
             masks (np.ndarray, optional): Masks tensor. Required when RNN is enabled,
@@ -208,40 +220,16 @@ class MAPPO:
                                       if RNN is disabled
         """
         with torch.no_grad():
-            # Handle EP state type NOTE: could be not so important
-            if self.state_type == "EP":
-                B, n_agents = state.shape[0], self.n_agents
-                assert B % n_agents == 0, "batch not divisible by n_agents"
-                N = B // n_agents # n_rollout_threads(n_envs)
-
-                state_env = torch.tensor(state,dtype=torch.float32,
-                                        device=self.device).view(N, n_agents, -1)[:, 0] # (n_envs, s_dim)
-                
-                if self.use_rnn: 
-                    if rnn_states is None or masks is None:
-                        raise ValueError("rnn_states/masks missing with RNN enabled")
-                    h_env = torch.tensor(rnn_states, dtype=torch.float32,
-                                            device=self.device).view(N,
-                                                                    n_agents,
-                                                                    *rnn_states.shape[1:])[:, 0]
-                    m_env = torch.tensor(masks, dtype=torch.float32,
-                                            device=self.device).view(N, n_agents, 1)[:, 0]
-                else:
-                    h_env, m_env = None, None
-       
-                values, rnn_states_out = self.critic(state_env, h_env, m_env) # (n_envs,1)
-
-                # broadcast back so downstream code (GAE, PPO minibatching) stays unchanged
-                values  = values.repeat_interleave(n_agents, dim=0).cpu().numpy()
-                if rnn_states_out is not None:
-                    rnn_states_out = rnn_states_out.repeat_interleave(n_agents, dim=0).cpu().numpy()
-
-                return values, rnn_states_out
             
-            # ----- compute-each-agent branch ---------------------------------------
-
-            # Convert state to tensor
-            state = torch.tensor(state, dtype=torch.float32).to(self.device)
+            if self.state_type == "AS":
+                # Concatenate observation and state spaces for AS state type
+                state = state * active_masks # (batch_size, n_state) # Mask out inactive agents
+                state = torch.cat([torch.tensor(obs, dtype=torch.float32,
+                                                   device=self.device),
+                                    torch.tensor(state, dtype=torch.float32,
+                                                   device=self.device)], dim=-1)
+            else:
+                state = torch.tensor(state, dtype=torch.float32).to(self.device)   
         
             # Handle RNN states and masks based on whether RNN is enabled
             if self.use_rnn:
@@ -268,7 +256,7 @@ class MAPPO:
 
             return values_np, rnn_states_out_np
 
-    def evaluate_actions(self, state, obs, actions, available_actions, masks, actor_h0=None, critic_h0=None):
+    def evaluate_actions(self, state, obs, actions, available_actions, masks, active_masks, actor_h0=None, critic_h0=None):
         """
         Evaluate actions for training.
 
@@ -278,6 +266,7 @@ class MAPPO:
             actions (torch.Tensor): Actions tensor #(seq_len, batch_size, 1) or #(batch_size, 1)
             available_actions (torch.Tensor): Available actions tensor #(seq_len, batch_size, action_dim) or #(batch_size, action_dim)
             masks (torch.Tensor): Masks tensor #(seq_len, batch_size, 1) or #(batch_size, 1)
+            active_masks (torch.Tensor): Active masks tensor #(seq_len, batch_size, 1) or #(batch_size, 1)
             actor_h0 (torch.Tensor): Initial actor RNN states tensor #(num_layers, batch_size, hidden_size) or None
             critic_h0 (torch.Tensor): Initial critic RNN states tensor #(num_layers, batch_size, hidden_size) or None
 
@@ -291,6 +280,11 @@ class MAPPO:
             masks,
             available_actions)
         
+        if self.state_type == "AS":
+            state = state * active_masks # (seq_len, batch_size, n_state) # Mask out inactive agents
+            # Concatenate observation and state spaces for AS state type
+            state = torch.cat([obs, state], dim=-1)
+
         values, _ = self.critic(state, critic_h0, masks)
         return values, action_log_probs, dist_entropy
 
@@ -354,7 +348,7 @@ class MAPPO:
         # Evaluate actions
         values, action_log_probs, dist_entropy = self.evaluate_actions(
             global_state_batch, obs_batch, actions_batch,
-            available_actions_batch, masks_batch,
+            available_actions_batch, masks_batch, active_masks_batch,
             actor_h0_batch, critic_h0_batch
         )
 

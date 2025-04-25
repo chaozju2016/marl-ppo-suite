@@ -85,6 +85,7 @@ class MAPPORunner:
             f"minibatch{args.num_mini_batch}_epochs{args.ppo_epoch}_"
             f"gamma{args.gamma}_gae{args.gae_lambda}_"
             f"clip{args.clip_param}_state{args.state_type}_"
+            f"aid{args.use_agent_id}_dmask{args.use_death_masking}_"
             f"rnn{args.use_rnn}_{int(time.time())}"
         )
 
@@ -229,6 +230,7 @@ class MAPPORunner:
             flatten_obs = flatten_first_dims(self.buffer.obs[step])  # (n_rollout_threads*n_agents, obs_shape)
             flatten_share_obs = flatten_first_dims(self.buffer.get_state(step, replicate=True))  # (n_rollout_threads*n_agents, state_shape)
             flatten_masks = flatten_first_dims(self.buffer.masks[step])  # (n_rollout_threads*n_agents, 1)
+            flatten_active_masks = flatten_first_dims(self.buffer.active_masks[step])  # (n_rollout_threads*n_agents, 1)
 
             # Handle available actions if present
             flatten_available_actions = (
@@ -256,6 +258,8 @@ class MAPPORunner:
 
             values, critic_rnn_states = self.agent.get_values(
                 flatten_share_obs,
+                flatten_obs,
+                flatten_active_masks,
                 flatten_critic_rnn_states,
                 flatten_masks
             )
@@ -394,6 +398,8 @@ class MAPPORunner:
         """
         next_value, _ = self.agent.get_values(
             flatten_first_dims(self.buffer.get_state(-1, replicate=True)),
+            flatten_first_dims(self.buffer.obs[-1]),
+            flatten_first_dims(self.buffer.active_masks[-1]),
             flatten_first_dims(self.buffer.get_critic_rnn(-1, replicate=True)) if self.args.use_rnn else None,
             flatten_first_dims(self.buffer.masks[-1]))
 

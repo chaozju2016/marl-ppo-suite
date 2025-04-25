@@ -44,12 +44,24 @@ class SMACv2Env:
            shape=(state_shape,),
            dtype=np.float32
         )
-        self.observation_space = Box(
-            low=-np.inf,
-            high=np.inf,
-            shape=(obs_shape,),
-            dtype=np.float32
-        )
+
+        # If using agent IDs, add the agent ID dimensions to the observation space
+        if self.use_agent_id:
+            obs_shape_with_id = obs_shape + self.n_agents
+            self.observation_space = Box(
+                low=-np.inf,
+                high=np.inf,
+                shape=(obs_shape_with_id,),
+                dtype=np.float32
+            )
+        else:
+            self.observation_space = Box(
+                low=-np.inf,
+                high=np.inf,
+                shape=(obs_shape,),
+                dtype=np.float32
+            )
+
         self.action_space = Discrete(n_actions)
 
     def reset(self):
@@ -68,6 +80,11 @@ class SMACv2Env:
         obs = self.env.get_obs()
         state = self.env.get_state()
         available_actions = self.env.get_avail_actions()
+
+        # Add agent IDs to observations if enabled
+        if self.use_agent_id:
+            obs = self._add_agent_id_to_obs(obs)
+
         return obs, state, available_actions
 
     def step(self, actions):
@@ -93,6 +110,10 @@ class SMACv2Env:
         obs = self.env.get_obs()
         state = self.env.get_state()
         available_actions = self.env.get_avail_actions()
+
+        # Add agent IDs to observations if enabled
+        if self.use_agent_id:
+            obs = self._add_agent_id_to_obs(obs)
 
         # Format rewards for each agent
         rewards = [[reward]] * self.n_agents
@@ -129,6 +150,20 @@ class SMACv2Env:
 
     def close(self):
         self.env.close()
+
+    def _add_agent_id_to_obs(self, obs):
+        """
+        Add agent ID as a one-hot encoding to each agent's observation.
+
+        Args:
+            obs: List of observations for each agent
+
+        Returns:
+            List of observations with agent IDs added
+        """
+        obs = np.asarray(obs, dtype=np.float32)            # (n_agents, obs_dim)
+        eye = np.eye(self.n_agents, dtype=np.float32)      # (n_agents, n_agents)
+        return np.concatenate([obs, eye], axis=1)          # (n_agents, obs_dim + n_agents)
 
     def _load_map_config(self, map_name):
         """

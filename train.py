@@ -51,10 +51,10 @@ def parse_args():
 
     # State parameters 
     parser.add_argument("--state_type", type=str, default="EP", choices=["FP", "EP", "AS"],
-        help="Type of state to use in critic: 'FP' (Feature Pruned AS only Smacv1) or "
+        help="Type of state to use in critic: 'FP' (Feature Pruned AS - only Smacv1) or "
         "'EP' (Environment Provided) or 'AS' (Agent-Specific - observation + state / not implemented)")
 
-    # SMACv2 state parameters TODO:Implements
+    # SMACv2 state parameters
     parser.add_argument("--use_death_masking", action="store_false", default=True,
         help="Whether to use SMACv2 death masking (default: True)")
     parser.add_argument("--use_agent_id", action="store_true", default=False,
