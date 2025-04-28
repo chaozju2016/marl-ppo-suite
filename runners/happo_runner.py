@@ -218,19 +218,19 @@ class HAPPORunner:
             values_t, critic_rnn_states_t = self.agent.get_values(
                 flatten_first_dims(
                     to_tensor(self.buffer.get_state(step, replicate=True), device=self.device)
-                    ),
+                ),
                 flatten_first_dims(
                     to_tensor(self.buffer.obs[step], device=self.device)
-                    ),
+                ),
                 flatten_first_dims(
                     to_tensor(self.buffer.active_masks[step], device=self.device)
-                    ),
+                ),
                 flatten_first_dims(
                     to_tensor(self.buffer.get_critic_rnn(step, replicate=True), device=self.device)
-                    ) if self.args.use_rnn else None,
+                ) if self.args.use_rnn else None,
                 flatten_first_dims(
                     to_tensor(self.buffer.masks[step], device=self.device)
-                    )
+                )
             )
 
             actions = actions_t.cpu().numpy()
@@ -239,8 +239,11 @@ class HAPPORunner:
             
             # Reshape values and critic_rnn_states
             shape = (self.args.n_rollout_threads, self.envs.n_agents)
-            values = unflatten_first_dim(values_t.cpu().numpy(), shape)
-            critic_rnn_states = unflatten_first_dim(critic_rnn_states_t.cpu().numpy(), shape) if self.args.use_rnn else None
+            values = unflatten_first_dim(values_t, shape).cpu().numpy()
+            critic_rnn_states = (
+                unflatten_first_dim(critic_rnn_states_t, shape).cpu().numpy()
+                if self.args.use_rnn else None
+            )
 
             # Execute actions in environment
             obs, share_obs, rewards, dones, infos, available_actions = self.envs.step(actions)
@@ -361,9 +364,9 @@ class HAPPORunner:
 
         self.buffer.compute_returns_and_advantages(
             unflatten_first_dim(
-                next_value.cpu().numpy(),
+                next_value,
                 (self.args.n_rollout_threads, self.envs.n_agents)
-            ),
+            ).cpu().numpy(),
             self.args.gamma,
             self.args.gae_lambda)
 

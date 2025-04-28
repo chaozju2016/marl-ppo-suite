@@ -55,15 +55,11 @@ def flatten_first_dims(data: Union[np.ndarray, torch.Tensor], n_dims: int = 2) -
         - torch.cat(data)
         when the data is already in a single array/tensor.
     """
-    if isinstance(data, np.ndarray):
-        # Calculate new shape: product of first n_dims, followed by remaining dims
-        new_shape = (-1,) + data.shape[n_dims:]
-        return data.reshape(new_shape)
-    elif isinstance(data, torch.Tensor):
-        new_shape = (-1,) + data.shape[n_dims:]
-        return data.reshape(new_shape)   # ← reshape handles non-contiguous
-    else:
-        raise TypeError(f"Unsupported data type: {type(data)}. Expected numpy.ndarray or torch.Tensor")
+    if not isinstance(data, (np.ndarray, torch.Tensor)):
+        raise TypeError(f"Expected np.ndarray or torch.Tensor, got {type(data)}")
+    
+    new_shape = (-1, *data.shape[n_dims:])
+    return data.reshape(new_shape)     
 
 def unflatten_first_dim(data: Union[np.ndarray, torch.Tensor], 
                        dims_to_unflatten: Tuple[int, ...]) -> Union[np.ndarray, torch.Tensor]:

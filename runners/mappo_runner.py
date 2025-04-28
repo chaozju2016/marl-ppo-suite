@@ -9,19 +9,11 @@ from algos.mappo import MAPPO
 
 
 from utils.logger import Logger
-from utils.reward_normalization_new import StandardNormalizer, EMANormalizer
-from utils.transform_tools import flatten_first_dims, unflatten_first_dim
+from utils.reward_normalization_new import StandardNormalizer, EMANormalizer, normalise_shared_reward
+from utils.transform_tools import flatten_first_dims, unflatten_first_dim, to_tensor
 
 # import wandb
 # TODO: Add use case for the wandb
-def normalise_shared_reward(rew: np.ndarray, norm):
-    """
-    rew : (n_env, n_agents, 1) – identical values along the agent axis
-    norm: StandardNormalizer or EMANormalizer
-    """
-    r_env  = rew[:, 0, 0]
-    r_norm = norm.normalize(r_env)[:, None, None] #  # (n_env,1,1) add broadcast dims
-    return np.broadcast_to(r_norm, rew.shape) # view, no copy
 
 class MAPPORunner:
     """
@@ -99,6 +91,8 @@ class MAPPORunner:
             "map_name": args.map_name,
             "use_rnn": args.use_rnn,
             "state_type": args.state_type,
+            "use_death_masking": args.use_death_masking,
+            "use_agent_id": args.use_agent_id,
             "lr": args.lr,
             "optimizer_eps": args.optimizer_eps,
             "use_linear_lr_decay": args.use_linear_lr_decay,
@@ -226,54 +220,51 @@ class MAPPORunner:
         }
 
         for step in range(self.args.n_steps):
-            # Prepare basic observations
-            flatten_obs = flatten_first_dims(self.buffer.obs[step])  # (n_rollout_threads*n_agents, obs_shape)
-            flatten_share_obs = flatten_first_dims(self.buffer.get_state(step, replicate=True))  # (n_rollout_threads*n_agents, state_shape)
-            flatten_masks = flatten_first_dims(self.buffer.masks[step])  # (n_rollout_threads*n_agents, 1)
-            flatten_active_masks = flatten_first_dims(self.buffer.active_masks[step])  # (n_rollout_threads*n_agents, 1)
-
-            # Handle available actions if present
-            flatten_available_actions = (
-                flatten_first_dims(self.buffer.available_actions[step])
-                if self.buffer.available_actions is not None
-                else None
-            )
-
-            # Prepare RNN states if using RNN
-            if self.args.use_rnn:
-                flatten_actor_rnn_states = flatten_first_dims(self.buffer.actor_rnn_states[step])
-                flatten_critic_rnn_states = flatten_first_dims(self.buffer.get_critic_rnn(step, replicate=True))
-            else:
-                flatten_actor_rnn_states = None
-                flatten_critic_rnn_states = None
-
             # Get actions and values
-            actions, action_log_probs, actor_rnn_states = self.agent.get_actions(
-                flatten_obs,
-                flatten_actor_rnn_states,
-                flatten_masks,
-                flatten_available_actions,
+            actions_t, action_log_probs_t, actor_rnn_states_t = self.agent.get_actions(
+                flatten_first_dims(
+                    to_tensor(self.buffer.obs[step], device=self.device)
+                ),
+                flatten_first_dims(
+                    to_tensor(self.buffer.actor_rnn_states[step], device=self.device) 
+                ) if self.args.use_rnn else None,
+                flatten_first_dims(
+                    to_tensor(self.buffer.active_masks[step], device=self.device)
+                ),
+                flatten_first_dims(
+                    to_tensor(self.buffer.available_actions[step], device=self.device)
+                ) if self.buffer.available_actions is not None else None,
                 deterministic=False
             )
 
-            values, critic_rnn_states = self.agent.get_values(
-                flatten_share_obs,
-                flatten_obs,
-                flatten_active_masks,
-                flatten_critic_rnn_states,
-                flatten_masks
+            values_t, critic_rnn_states_t = self.agent.get_values(
+                flatten_first_dims(
+                    to_tensor(self.buffer.get_state(step, replicate=True), device=self.device)
+                ),
+                flatten_first_dims(
+                    to_tensor(self.buffer.obs[step], device=self.device)
+                ),
+                flatten_first_dims(
+                    to_tensor(self.buffer.active_masks[step], device=self.device)
+                ),
+                flatten_first_dims(
+                    to_tensor(self.buffer.get_critic_rnn(step, replicate=True), device=self.device)
+                ) if self.args.use_rnn else None,
+                flatten_first_dims(
+                    to_tensor(self.buffer.masks[step], device=self.device)
+                )
             )
 
             # Reshape actions and values
             shape = (self.args.n_rollout_threads, self.envs.n_agents)
-            actions = unflatten_first_dim(actions, shape)
-            action_log_probs = unflatten_first_dim(action_log_probs, shape)
-            values = unflatten_first_dim(values, shape)
+            actions = unflatten_first_dim(actions_t, shape).cpu().numpy()
+            action_log_probs = unflatten_first_dim(action_log_probs_t, shape).cpu().numpy()
+            values = unflatten_first_dim(values_t, shape).cpu().numpy() 
 
             # Reshape RNN states if using RNN
             if self.args.use_rnn:
-                actor_rnn_states = unflatten_first_dim(actor_rnn_states, shape)
-                critic_rnn_states = unflatten_first_dim(critic_rnn_states, shape)
+                actor_rnn_states = unflatten_first_dim(actor_rnn_states_t, shape).cpu().numpy()
+                critic_rnn_states = unflatten_first_dim(critic_rnn_states_t, shape).cpu().numpy()
             else:
                 actor_rnn_states = None
                 critic_rnn_states = None
@@ -397,16 +388,31 @@ class MAPPORunner:
         Compute returns and advantages for the collected trajectories.
         """
         next_value, _ = self.agent.get_values(
-            flatten_first_dims(self.buffer.get_state(-1, replicate=True)),
-            flatten_first_dims(self.buffer.obs[-1]),
-            flatten_first_dims(self.buffer.active_masks[-1]),
-            flatten_first_dims(self.buffer.get_critic_rnn(-1, replicate=True)) if self.args.use_rnn else None,
-            flatten_first_dims(self.buffer.masks[-1]))
+             flatten_first_dims(
+                to_tensor(self.buffer.get_state(-1, replicate=True), device=self.device)
+            ),
+            flatten_first_dims(
+                to_tensor(self.buffer.obs[-1], device=self.device)
+            ),
+            flatten_first_dims(
+                to_tensor(self.buffer.active_masks[-1], device=self.device)
+            ),
+            flatten_first_dims(
+                to_tensor(self.buffer.get_critic_rnn(-1, replicate=True), device=self.device)
+            ) if self.args.use_rnn else None,
+            flatten_first_dims(
+                to_tensor(self.buffer.masks[-1], device=self.device)
+            )
+        )
 
         self.buffer.compute_returns_and_advantages(
-            unflatten_first_dim(next_value, (self.args.n_rollout_threads, self.envs.n_agents)),
+             unflatten_first_dim(
+                next_value,
+                (self.args.n_rollout_threads, self.envs.n_agents)
+            ).cpu().numpy(),
             self.args.gamma,
-            self.args.gae_lambda)
+            self.args.gae_lambda
+        )
 
     def _check_episode_outcome(self, done_envs, current_step):
         """
@@ -524,29 +530,29 @@ class MAPPORunner:
             dtype=np.float32)
 
         while True:
-            flatten_obs = flatten_first_dims(obs)  # (n_rollout_threads*n_agents, obs_shape)
-            flatten_masks = flatten_first_dims(eval_masks)  # (n_rollout_threads*n_agents, 1)
-            # Handle available actions if present
-            flatten_available_actions = (
-                flatten_first_dims(available_actions)
-                if available_actions is not None
-                else None
-            )
-            # Prepare RNN states if using RNN
-            flatten_eval_rnn_states = flatten_first_dims(eval_rnn_states) if self.args.use_rnn else None
-
             # Get actions
             actions, _, eval_rnn_states = self.agent.get_actions(
-                flatten_obs,
-                flatten_eval_rnn_states,
-                flatten_masks,
-                flatten_available_actions,
+                flatten_first_dims(
+                    to_tensor(obs, device=self.device, copy=True)
+                ),
+                flatten_first_dims(
+                    to_tensor(eval_rnn_states, device=self.device, copy=True) 
+                ) if self.args.use_rnn else None,
+                flatten_first_dims(
+                    to_tensor(eval_masks, device=self.device, copy=True)
+                ),
+                flatten_first_dims(
+                    to_tensor(available_actions, device=self.device, copy=True)
+                ) if available_actions is not None else None,
                 deterministic=True
             )
+
             # Reshape actions and values
             shape = (self.args.n_eval_rollout_threads, self.eval_envs.n_agents)
-            actions = unflatten_first_dim(actions, shape)
-            eval_rnn_states = unflatten_first_dim(eval_rnn_states, shape) if self.args.use_rnn else None
+            actions = unflatten_first_dim(actions, shape).cpu().numpy()
+            eval_rnn_states = (
+                unflatten_first_dim(eval_rnn_states, shape).cpu().numpy()
+            ) if self.args.use_rnn else None
 
             # Execute actions in environment
             obs, share_obs, rewards, dones, infos, available_actions = self.eval_envs.step(actions)

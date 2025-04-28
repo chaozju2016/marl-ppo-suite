@@ -145,10 +145,10 @@ class MAPPO:
 
     def get_actions(
             self,
-            obs: np.ndarray,
-            rnn_states: np.ndarray=None,
-            masks: np.ndarray=None,
-            available_actions: np.ndarray = None,
+            obs: torch.Tensor,
+            rnn_states: torch.Tensor=None,
+            masks: torch.Tensor=None,
+            available_actions: torch.Tensor = None,
             deterministic: bool = False
         ):
         """
@@ -156,67 +156,54 @@ class MAPPO:
         Batched version -> Batch(B) = (n_rollout_threads, n_agents) = n_rollout_threads * n_agents
 
         Args:
-            obs (np.ndarray): Observation tensor #(batch_size, obs_shape)
-            rnn_states (np.ndarray, optional): RNN states tensor. Required when RNN is enabled,
+            obs (torch.Tensor): Observation tensor #(batch_size, obs_shape)
+            rnn_states (torch.Tensor, optional): RNN states tensor. Required when RNN is enabled,
                 can be None otherwise. #(batch_size, num_layers hidden_size)
-            masks (np.ndarray, optional): Masks tensor. Required when RNN is enabled,
+            masks (torch.Tensor, optional): Masks tensor. Required when RNN is enabled,
                 can be None otherwise. #(batch_size, 1)
-            available_actions (np.ndarray, optional): Available actions tensor #(batch_size, n_actions)
+            available_actions (torch.Tensor, optional): Available actions tensor #(batch_size, n_actions)
             deterministic (bool): Whether to use deterministic actions
 
         Returns:
-            actions (np.ndarray): Actions tensor #(batch_size, 1)
-            action_log_probs (np.ndarray): Action log probabilities tensor #(batch_size, 1)
-            rnn_states_out (np.ndarray): Updated RNN states tensor #(batch_size, num_layers, hidden_size)
+            actions (torch.Tensor): Actions tensor #(batch_size, 1)
+            action_log_probs (torch.Tensor): Action log probabilities tensor #(batch_size, 1)
+            rnn_states_out (torch.Tensor): Updated RNN states tensor #(batch_size, num_layers, hidden_size)
                                         or None if RNN is disabled
         """
         with torch.no_grad():
-            # Convert to tensors
-            obs = torch.tensor(obs, dtype=torch.float32).to(self.device) # (B, obs_shape)
-
             # Handle RNN states and masks based on whether RNN is enabled
             if self.use_rnn:
                 if rnn_states is None or masks is None:
                     raise ValueError("rnn_states and masks must be provided when RNN is enabled")
-                rnn_states = torch.tensor(rnn_states, dtype=torch.float32).to(self.device)
-                masks = torch.tensor(masks, dtype=torch.float32).to(self.device)
-            else:
-                rnn_states = None
-                masks = None
 
-            if available_actions is not None:
-                available_actions = torch.tensor(available_actions, dtype=torch.float32).to(self.device) 
-            
             # Get actions
             actions, action_log_probs, rnn_states_out = self.actor.get_actions(
                 obs, rnn_states, masks, available_actions, deterministic
             )
 
-            actions = actions.cpu().numpy() # (B, 1)
-            action_log_probs = action_log_probs.cpu().numpy() if not deterministic else None # (B, 1)
-
-            # Handle RNN states output
-            if rnn_states_out is not None:
-                rnn_states_out = rnn_states_out.cpu().numpy() # (B, num_layers, hidden_size)
-
         return actions, action_log_probs, rnn_states_out
 
-    def get_values(self, state, obs, active_masks, rnn_states=None, masks=None):
+    def get_values(self, 
+                   state:torch.Tensor, 
+                   obs:torch.Tensor, 
+                   active_masks:torch.Tensor, 
+                   rnn_states:torch.Tensor=None, 
+                   masks:torch.Tensor=None):
         """
         Get values from the critic network.
         Batched version -> Batch(B) = (n_rollout_threads, n_agents) = n_rollout_threads * n_agents
 
         Args:
-            state (np.ndarray): State tensor #(B, state_shape)
-            obs (np.ndarray): Observation tensor #(B, obs_shape)
-            active_masks (np.ndarray): Active masks tensor #(B, 1) - used for death masking in (AS)
-            rnn_states (np.ndarray, optional): RNN states tensor. Required when RNN is enabled,
+            state (torch.Tensor): State tensor #(B, state_shape)
+            obs (torch.Tensor): Observation tensor #(B, obs_shape)
+            active_masks (torch.Tensor): Active masks tensor #(B, 1) - used for death masking in (AS)
+            rnn_states (torch.Tensor, optional): RNN states tensor. Required when RNN is enabled,
                                           can be None otherwise. #(B, n_layers, hidden_size)
-            masks (np.ndarray, optional): Masks tensor. Required when RNN is enabled,
+            masks (torch.Tensor, optional): Masks tensor. Required when RNN is enabled,
                                      can be None otherwise. #(B, 1)
 
         Returns:
-            Tuple[np.ndarray, np.ndarray]: (values, rnn_states_out) where rnn_states_out is None
+            Tuple[torch.Tensor, torch.Tensor]: (values, rnn_states_out) where rnn_states_out is None
                                       if RNN is disabled
         """
         with torch.no_grad():
@@ -224,22 +211,12 @@ class MAPPO:
             if self.state_type == "AS":
                 # Concatenate observation and state spaces for AS state type
                 state = state * active_masks # (batch_size, n_state) # Mask out inactive agents
-                state = torch.cat([torch.tensor(obs, dtype=torch.float32,
-                                                   device=self.device),
-                                    torch.tensor(state, dtype=torch.float32,
-                                                   device=self.device)], dim=-1)
-            else:
-                state = torch.tensor(state, dtype=torch.float32).to(self.device)   
+                state = torch.cat([obs, state], dim=-1)  
         
             # Handle RNN states and masks based on whether RNN is enabled
             if self.use_rnn:
                 if rnn_states is None or masks is None:
                     raise ValueError("rnn_states and masks must be provided when RNN is enabled")
-                rnn_states = torch.tensor(rnn_states, dtype=torch.float32).to(self.device)
-                masks = torch.tensor(masks, dtype=torch.float32).to(self.device)
-            else:
-                rnn_states = None
-                masks = None
 
             # Get values and states
             values, rnn_states_out = self.critic(
@@ -248,13 +225,7 @@ class MAPPO:
                 masks
             )
 
-            # Convert values to numpy
-            values_np = values.cpu().numpy()
-        
-            # Handle RNN states output
-            rnn_states_out_np = rnn_states_out.cpu().numpy() if rnn_states_out is not None else None
-
-            return values_np, rnn_states_out_np
+            return values, rnn_states_out
 
     def evaluate_actions(self, state, obs, actions, available_actions, masks, active_masks, actor_h0=None, critic_h0=None):
         """
