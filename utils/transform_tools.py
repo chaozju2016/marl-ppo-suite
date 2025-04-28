@@ -2,14 +2,31 @@ import numpy as np
 import torch
 from typing import Union, Tuple, Any
 
-def n2t(x, *, dtype=torch.float32, device=None):
+def to_tensor(x, *, device, dtype=torch.float32, copy=False):
+    """Fast conversion to torch tensor on specified device.
+    
+    Usage:
+        buffers: to_t(obs, device=self.device)  # zero-copy
+        runners: to_t(states, device=device, copy=True)  # safe copy for async env
     """
-    Behaves like torch.as_tensor but silently copies once if the NumPy
-    array is read-only.  No warning, no unnecessary reallocations.
-    """
-    if isinstance(x, np.ndarray) and not x.flags.writeable:
-        x = np.array(x, copy=True)              # one cheap copy
-    return torch.as_tensor(x, dtype=dtype, device=device)
+    if torch.is_tensor(x):
+        return x.to(device=device, dtype=dtype, non_blocking=True)
+    
+    #  # Add debug info for non-writable arrays
+    # if isinstance(x, np.ndarray) and not x.flags.writeable:
+    #     print(f"Warning: Non-writable array detected:")
+    #     print(f"Shape: {x.shape}")
+    #     print(f"Type: {x.dtype}")
+    #     print(f"Memory flags: {x.flags}")
+    #     # Stack trace to identify caller
+    #     import traceback
+    #     print("Call stack:")
+    #     traceback.print_stack()
+    #     copy = True
+
+    if copy or not x.flags.writeable: # Always copy when the NumPy array is not writeable
+        return torch.tensor(x, device=device, dtype=dtype)  # always copies
+    return torch.as_tensor(x, device=device, dtype=dtype)   # may alias, no copy
 
 def flatten_first_dims(data: Union[np.ndarray, torch.Tensor], n_dims: int = 2) -> Union[np.ndarray, torch.Tensor]:
     """
@@ -43,8 +60,8 @@ def flatten_first_dims(data: Union[np.ndarray, torch.Tensor], n_dims: int = 2) -
         new_shape = (-1,) + data.shape[n_dims:]
         return data.reshape(new_shape)
     elif isinstance(data, torch.Tensor):
-        new_shape = (-1,) + tuple(data.shape[n_dims:])
-        return data.view(new_shape)
+        new_shape = (-1,) + data.shape[n_dims:]
+        return data.reshape(new_shape)   # ← reshape handles non-contiguous
     else:
         raise TypeError(f"Unsupported data type: {type(data)}. Expected numpy.ndarray or torch.Tensor")
 
@@ -68,3 +85,32 @@ def unflatten_first_dim(data: Union[np.ndarray, torch.Tensor],
         return data.reshape(dims_to_unflatten + data.shape[1:])
     else:
         raise TypeError(f"Unsupported data type: {type(data)}")
+
+def flatten_time_batch(T: int, N: int, x: torch.Tensor) -> torch.Tensor:
+    """Flatten time and batch dimensions while preserving the rest.
+
+    Memory-efficient flattening of first two dimensions using PyTorch's view operation.
+    Commonly used in RL for reshaping (timesteps, batch, *features) -> (timesteps*batch, *features).
+
+    Args:
+        T (int): Time dimension size
+        N (int): Batch dimension size
+        x (torch.Tensor): Input tensor with shape (T, N, *features)
+
+    Returns:
+        torch.Tensor: Reshaped tensor with shape (T*N, *features)
+
+    Examples:
+        >>> states = torch.zeros(32, 8, 256)  # (timesteps, batch_size, hidden_dim)
+        >>> flat_states = flatten_time_batch(32, 8, states)  # shape: (256, 256)
+
+    Raises:
+        ValueError: If x.shape[:2] doesn't match (T, N)
+    """
+    if not isinstance(x, torch.Tensor):
+        raise TypeError(f"Input must be torch tensor, got {type(x)}")
+    
+    if x.shape[0] != T or x.shape[1] != N:
+        raise ValueError(f"Shape mismatch. Expected first two dims ({T}, {N}), got {x.shape[:2]}")
+    
+    return x.reshape(T * N, *x.shape[2:])

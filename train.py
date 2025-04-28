@@ -2,6 +2,7 @@ import argparse
 import atexit
 
 from runners.mappo_runner import MAPPORunner
+from runners.happo_runner import HAPPORunner
 from utils.sc2_utils import kill_sc2_processes
 
 # Register cleanup function to kill SC2 processes on exit
@@ -18,16 +19,16 @@ from utils.sc2_utils import kill_sc2_processes
 
 def parse_args():
     """
-    Parse command line arguments for MAPPO training.
+    Parse command line arguments for MAPPO&HAPPO training.
 
     Returns:
         argparse.Namespace: Parsed arguments
     """
-    parser = argparse.ArgumentParser("MAPPO for StarCraft")
+    parser = argparse.ArgumentParser("MAPPO&HAPPO for StarCraft")
 
     # Algorithm parameters
     parser.add_argument("--algo", type=str, default="mappo",
-                        choices=["mappo"],
+                        choices=["mappo", "happo"],
                         help="Which algorithm to use")
     parser.add_argument("--seed", type=int, default=1, help="Random seed for numpy/torch")
     parser.add_argument("--cuda", action='store_false', default=True,
@@ -71,8 +72,8 @@ def parse_args():
                         help="Minimum learning rate")
 
     # Network parameters
-    parser.add_argument("--hidden_size", type=int, default=64,
-                        help="Dimension of hidden layers")
+    parser.add_argument("--fixed_order", action="store_true", default=False,
+                        help="Whether to use fixed order for HAPPO (default: False)")
     parser.add_argument("--use_rnn", action="store_true", default=False,
                         help="Whether to use RNN networks (default: False)")
     parser.add_argument("--rnn_layers", type=int, default=1,
@@ -81,6 +82,8 @@ def parse_args():
                         help="Time length of chunks used to train a recurrent_policy")
     parser.add_argument("--fc_layers", type=int, default=2,
                         help="Number of fc layers in actor/critic network")
+    parser.add_argument("--hidden_size", type=int, default=64,
+                        help="Dimension of hidden layers")
     parser.add_argument("--actor_gain", type=float, default=0.01,
                         help="Gain of the actor final linear layer")
     parser.add_argument("--use_feature_normalization", action='store_false',
@@ -167,6 +170,8 @@ def main():
     try:
         if args.algo == "mappo":
             runner = MAPPORunner(args)
+        elif args.algo == "happo":
+            runner = HAPPORunner(args)
         else:
             raise ValueError(f"Invalid algorithm: {args.algo}")
 

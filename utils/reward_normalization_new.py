@@ -134,3 +134,16 @@ class EMANormalizer(_BaseNormalizer):
         super().load_state_dict(state)
         self.decay = state.get("decay", self.decay)
         self._one_m = 1.0 - self.decay
+
+# -───────────────────────────────────────────────────────────────
+# 3. Helper function for runners
+# -───────────────────────────────────────────────────────────────
+
+def normalise_shared_reward(rew: np.ndarray, norm):
+    """
+    rew : (n_env, n_agents, 1) – identical values along the agent axis
+    norm: StandardNormalizer or EMANormalizer
+    """
+    r_env  = rew[:, 0, 0]
+    r_norm = norm.normalize(r_env)[:, None, None] #  # (n_env,1,1) add broadcast dims
+    return np.broadcast_to(r_norm, rew.shape) # view, no copy

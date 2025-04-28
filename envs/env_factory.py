@@ -52,7 +52,7 @@ def make_env(args, rank=None, is_eval=False):
         env_name = args.env_name
 
         if env_name == "smacv1":
-            if args.use_fp_wrapper:
+            if hasattr(args, "use_fp_wrapper") and args.use_fp_wrapper:
                 # Legacy Version using wrapper.
                 from smac.env import StarCraft2Env
                 from envs.wrappers import FeaturePrunedStateWrapper
@@ -75,8 +75,7 @@ def make_env(args, rank=None, is_eval=False):
                 from envs.smacv1.Starcraft2_Env import StarCraft2Env as SMACv1Env
 
                 env = SMACv1Env(
-                    map_name=args.map_name, 
-                    difficulty=args.difficulty,
+                    map_name=args.map_name,
                     state_type= args.state_type
                 )
         elif env_name == "smacv2":

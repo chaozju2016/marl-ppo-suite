@@ -2,6 +2,7 @@ import numpy as np
 import torch
 
 from utils.env_tools import get_shape_from_obs_space, get_shape_from_act_space
+from utils.transform_tools import flatten_time_batch, to_tensor
 
 def _transform_data(data_np: np.ndarray, device: torch.device, sequence_first: bool = False) -> torch.Tensor:
     """
@@ -19,13 +20,12 @@ def _transform_data(data_np: np.ndarray, device: torch.device, sequence_first: b
     """
     if sequence_first:
         # Keep original sequence ordering
-        return torch.tensor(data_np, dtype=torch.float32).to(device)
+        return to_tensor(data_np, device=device, copy=True)
     else:
         # Original behavior: transpose and flatten
         # Use copy() to ensure contiguous memory layout in NumPy
-        reshaped_data = data_np.transpose(1, 2, 0, 3).reshape(-1, *data_np.shape[3:]).copy()
-        return torch.tensor(reshaped_data, dtype=torch.float32).to(device)
-
+        reshaped_data = data_np.transpose(1, 2, 0, 3).reshape(-1, *data_np.shape[3:])
+        return to_tensor(reshaped_data, device=device, copy=True)
 
 class RolloutStorage:
     """
@@ -112,6 +112,84 @@ class RolloutStorage:
         # Extra buffers for the algorithm
         self.returns = np.zeros((self.n_steps + 1, self.n_rollout_threads, n_agents, 1), dtype=np.float32)
         self.advantages = np.zeros((self.n_steps, self.n_rollout_threads, n_agents, 1), dtype=np.float32)
+
+    def for_agent(self, idx: int):
+        """
+        Return a view of the rollout storage for a specific agent.
+
+        Args:
+            idx (int): Index of the agent to create view for, must be in range [0, n_agents)
+
+        Returns:
+            AgentRolloutView: Zero-copy view of the storage data for the specified agent
+        """
+        from buffers.agent_rollout_view import AgentRolloutView
+
+        if not 0 <= idx < self.n_agents:
+            raise IndexError(f"Agent index {idx} out of range [0, {self.n_agents})")
+        return AgentRolloutView(self, idx)
+    
+    def get_state(self, t=slice(None), *, replicate=False):
+        """
+        Get state at time t, optionally replicating for each agent.
+
+        Args:
+            t : int | slice | ndarray
+                Time index/indices (0 … T).  Default 'slice(None)' = all steps.
+            replicate : bool
+                If True, broadcast central state to shape (..., N_agents, feat_dim).
+
+        Returns:
+            np.ndarray
+                FP / AS         → shape (..., N_env, N_agents, feat)
+                EP, replicate   → shape (..., N_env, N_agents, feat)
+                EP, no rep      → shape (..., N_env, feat)
+        """
+        # ---------- centralised state ------------------------------------------
+        if hasattr(self, "env_state"):  # EP
+            s = self.env_state[t]  # Shape depends on t: (N,feat) if t is int, (T,N,feat) if t is slice
+            if not replicate:
+                return s           # 2-D or 3-D, zero-copy slice
+            
+            # add a size-1 'agent' axis right before the feature dim
+            s = np.expand_dims(s, axis=-2)        # (N,1,F) or (T,N,1,F)
+            # broadcast that axis to n_agents WITHOUT materialising copies
+            shape = s.shape[:-2] + (self.n_agents, s.shape[-1])
+            return np.broadcast_to(s, shape)      # view, zero-copy
+        # ---------- agent-specific state ---------------------------------------
+        return self.agent_state[t]  # already (T,N,M,F) or (N,M,F) if t is int
+
+    def get_critic_rnn(self, t=slice(None), *, replicate=False):
+        """Get critic RNN states at time t, optionally replicating for each agent.
+
+        Args:
+            t : int | slice | ndarray
+                Time index/indices (0 … T).  Default 'slice(None)' = all steps.
+            replicate : bool
+                If True, broadcast central state to shape (..., N_agents, feat_dim).
+
+        Returns:
+            np.ndarray
+                FP / AS         → shape (..., N_env, N_agents, layers, feat)
+                EP, replicate   → shape (..., N_env, N_agents, layers, feat)
+                EP, no rep      → shape (..., N_env, layers, feat)
+        """
+        if not self.use_rnn:  # Early exit if not using RNN
+            return None
+        # ---------- centralised state ------------------------------------------
+        if hasattr(self, "env_critic_rnn"):
+            h = self.env_critic_rnn[t]  # Shape depends on t: (N,L,H) if t is int, (T,N,L,H) if t is slice
+            if not replicate:
+                return h  # 3-D or 4-D, zero-copy slice
+
+            # add a size-1 'agent' axis right before the layers dim
+            h = np.expand_dims(h, axis=-3)  # (N,1,L,H) or (T,N,1,L,H)
+            # broadcast that axis to n_agents WITHOUT materialising copies
+            shape = h.shape[:-3] + (self.n_agents, h.shape[-2], h.shape[-1])
+            return np.broadcast_to(h, shape)  # view, zero-copy
+        
+        # ---------- agent-specific state ---------------------------------------
+        return self.critic_rnn_states[t]  # (T,N,M,L,H) or (N,M,L,H) if t is int
 
     def insert(self, obs, global_state, actions,
         action_log_probs, values, rewards,
@@ -249,68 +327,6 @@ class RolloutStorage:
 
         return self.advantages, self.returns
 
-    def get_state(self, t=slice(None), *, replicate=False):
-        """
-        Get state at time t, optionally replicating for each agent.
-
-        Args:
-            t : int | slice | ndarray
-                Time index/indices (0 … T).  Default 'slice(None)' = all steps.
-            replicate : bool
-                If True, broadcast central state to shape (..., N_agents, feat_dim).
-
-        Returns:
-            np.ndarray
-                FP / AS         → shape (..., N_env, N_agents, feat)
-                EP, replicate   → shape (..., N_env, N_agents, feat)
-                EP, no rep      → shape (..., N_env, feat)
-        """
-        # ---------- centralised state ------------------------------------------
-        if hasattr(self, "env_state"):  # EP
-            s = self.env_state[t]  # Shape depends on t: (N,feat) if t is int, (T,N,feat) if t is slice
-            if not replicate:
-                return s           # 2-D or 3-D, zero-copy slice
-            
-            # add a size-1 'agent' axis right before the feature dim
-            s = np.expand_dims(s, axis=-2)        # (N,1,F) or (T,N,1,F)
-            # broadcast that axis to n_agents WITHOUT materialising copies
-            shape = s.shape[:-2] + (self.n_agents, s.shape[-1])
-            return np.broadcast_to(s, shape)      # view, zero-copy
-        # ---------- agent-specific state ---------------------------------------
-        return self.agent_state[t]  # already (T,N,M,F) or (N,M,F) if t is int
-
-    def get_critic_rnn(self, t=slice(None), *, replicate=False):
-        """Get critic RNN states at time t, optionally replicating for each agent.
-
-        Args:
-            t : int | slice | ndarray
-                Time index/indices (0 … T).  Default 'slice(None)' = all steps.
-            replicate : bool
-                If True, broadcast central state to shape (..., N_agents, feat_dim).
-
-        Returns:
-            np.ndarray
-                FP / AS         → shape (..., N_env, N_agents, layers, feat)
-                EP, replicate   → shape (..., N_env, N_agents, layers, feat)
-                EP, no rep      → shape (..., N_env, layers, feat)
-        """
-        if not self.use_rnn:  # Early exit if not using RNN
-            return None
-        # ---------- centralised state ------------------------------------------
-        if hasattr(self, "env_critic_rnn"):
-            h = self.env_critic_rnn[t]  # Shape depends on t: (N,L,H) if t is int, (T,N,L,H) if t is slice
-            if not replicate:
-                return h  # 3-D or 4-D, zero-copy slice
-
-            # add a size-1 'agent' axis right before the layers dim
-            h = np.expand_dims(h, axis=-3)  # (N,1,L,H) or (T,N,1,L,H)
-            # broadcast that axis to n_agents WITHOUT materialising copies
-            shape = h.shape[:-3] + (self.n_agents, h.shape[-2], h.shape[-1])
-            return np.broadcast_to(h, shape)  # view, zero-copy
-        
-        # ---------- agent-specific state ---------------------------------------
-        return self.critic_rnn_states[t]  # (T,N,M,L,H) or (N,M,L,H) if t is int
-
     def after_update(self):
         """Copy the last observation and masks to the beginning for the next update."""
         self.obs[0] = self.obs[-1].copy()
@@ -395,7 +411,7 @@ class RolloutStorage:
             batch_inds_subset = batch_inds[start_ind:end_ind]
 
             batch = {
-                key: torch.tensor(data[key][batch_inds_subset], dtype=torch.float32).to(self.device)
+                key: to_tensor(data[key][batch_inds_subset], device=self.device, copy=True)
                 for key in data.keys()
             }
 
@@ -417,11 +433,10 @@ class RolloutStorage:
 
             start_ind = end_ind
 
-
-    def get_minibatches_seq_first(self, num_mini_batch, data_chunk_length = 10):
+    def get_minibatches_seq_first(self, num_mini_batch = 1, data_chunk_length = 10):
         """
         Create minibatches for training RNN, flattening num_agents into total steps.
-        Returns sequences with shape [seq_len, batch_size, feat_dim] and RNN states
+        Returns sequences with shape [seq_len*batch_size, feat_dim] and RNN states
         with shape [num_layers, batch_size, hidden_dim].
 
         Args:
@@ -430,11 +445,11 @@ class RolloutStorage:
 
         Returns:
             Generator yielding minibatches as tuples with the following keys:
-            - obs: [seq_len, batch_size, obs_dim]
-            - global_state: [seq_len, batch_size, state_dim]
+            - obs: [seq_len*batch_size, obs_dim]
+            - global_state: [seq_len*batch_size, state_dim]
             - actor_rnn_states: [num_layers, batch_size, hidden_size]
             - critic_rnn_states: [num_layers, batch_size, hidden_size]
-            - actions, values, returns, etc.: [seq_len, batch_size, dim]
+            - actions, values, returns, etc.: [seq_len*batch_size, dim]
         """
         if not self.use_rnn:
             raise ValueError("RNN is not enabled, cannot use get_minibatches_seq_first")
@@ -487,8 +502,8 @@ class RolloutStorage:
                                                                                 critic_rnn_states.shape[-2],
                                                                                 critic_rnn_states.shape[-1])
 
-        data['actor_rnn_states'] = torch.tensor(actor_rnn_states, dtype=torch.float32, device=self.device)
-        data['critic_rnn_states'] = torch.tensor(critic_rnn_states, dtype=torch.float32, device=self.device)
+        data['actor_rnn_states'] = to_tensor(actor_rnn_states, device=self.device, copy=True)
+        data['critic_rnn_states'] = to_tensor(critic_rnn_states, device=self.device, copy=True)
 
         # Generate chunk start indices over total_agent_steps
         all_starts = np.arange(0, total_agent_steps - data_chunk_length + 1, data_chunk_length)
@@ -528,19 +543,21 @@ class RolloutStorage:
                 for key in sequences
             }
 
+            T, N = data_chunk_length, mini_batch_size
+            
             # Yield the minibatch as a tuple
             yield (
-                batch['obs'],
-                batch['global_state'],
+                flatten_time_batch(T, N, batch['obs']),
+                flatten_time_batch(T, N, batch['global_state']),
                 batch['actor_rnn_states'],
                 batch['critic_rnn_states'],
-                batch['actions'],
-                batch['values'],
-                batch['returns'],
-                batch['masks'],
-                batch['active_masks'],
-                batch['old_action_log_probs'],
-                batch['advantages'],
-                batch['available_actions'] if 'available_actions' in batch else None # Handle optional key
+                flatten_time_batch(T, N, batch['actions']),
+                flatten_time_batch(T, N, batch['values']),
+                flatten_time_batch(T, N, batch['returns']),
+                flatten_time_batch(T, N, batch['masks']),
+                flatten_time_batch(T, N, batch['active_masks']),
+                flatten_time_batch(T, N, batch['old_action_log_probs']),
+                flatten_time_batch(T, N, batch['advantages']),
+                flatten_time_batch(T, N, batch['available_actions']) if 'available_actions' in batch else None # Handle optional key
             )
 

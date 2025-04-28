@@ -515,7 +515,7 @@ class StarCraft2Env(MultiAgentEnv):
         # If state_type is "AS", default to "EP" configuration
         if state_type == "AS":
             state_type = "EP"
-            print(f"Using EP configuration for AS state type")
+            # print(f"Using EP configuration for AS state type")
 
         # Load only from the config directory
         current_dir = osp.dirname(osp.abspath(__file__))

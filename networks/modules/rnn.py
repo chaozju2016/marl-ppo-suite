@@ -45,6 +45,94 @@ class GRUModule(nn.Module):
     def forward(self, x, rnn_states, masks):
         """
         Forward pass through the GRU module with masking.
+        B is batch and its size is different, can be single step or multi step
+
+        Args:
+            x: (B_x, input_dim) for single step B_x = B_rnn, for multi step B = seq_len * B_rnn
+            rnn_states: (B_rnn, num_layers, hidden_dim)
+            masks: (B_x, 1) for single step B_x = B_rnn, for multi step B = seq_len * B_rnn
+        """
+        # x and rnn_states are (B, input_dim) and (B, num_layers, hidden_dim)
+        is_single_step = x.size(0) == rnn_states.size(0)
+
+        if is_single_step:
+            # Single step case: (B, input_dim) -> (1, B, input_dim) 
+            if __debug__:
+                # Single step case: (B, input_dim)
+                assert x.size(1) == self.input_dim, f"Expected input dimension {self.input_dim}, got {x.size(1)}"
+            x = x.view(1, -1, self.input_dim)
+             # Apply mask to RNN states
+            temp_states = (rnn_states.contiguous() * masks.view(-1, 1, 1))
+            temp_states = temp_states.transpose(0, 1) # (num_layers, B, hidden_size)
+            x, rnn_states = self.gru(x, temp_states)
+            x = x.squeeze(0) # (B, hidden_size) 
+            rnn_states = rnn_states.transpose(0, 1) # (num_layers, B, hidden_dim) -> (B, num_layers, hidden_dim)
+            return self.gru_layer_norm(x), rnn_states
+
+        if __debug__:
+            if not is_single_step:
+                # Multi-step case: (T, B, input_dim)
+                assert x.dim() == 2, f"Expected 2D input (T*B, input_dim), got {x.dim()}D"
+                assert x.size(1) == self.input_dim, f"Expected input dimension {self.input_dim}, got {x.size(1)}"
+            # Assert RNN states shape
+            assert rnn_states.size(1) == self.num_layers, f"Expected {self.num_layers} RNN layers, got {rnn_states.size(1)}"
+            assert rnn_states.size(2) == self.hidden_dim, f"Expected hidden dimension {self.hidden_dim}, got {rnn_states.size(2)}"
+
+        ##################################
+        # Handle Multi-step case (training)
+        ##################################
+        
+        batch_size = rnn_states.size(0)
+        seq_len = x.size(0) // batch_size
+        
+        # unflatten x and masks to (T, B, input_dim)
+        x = x.reshape(seq_len, batch_size, self.input_dim)
+        masks = masks.view(seq_len, batch_size).contiguous() # (T, B)
+
+        rnn_states = rnn_states.transpose(0, 1) # (B, num_layers, hidden_dim) -> (num_layers, B, hidden_dim)
+
+        # Using trick from iKostrikov to process sequences in chunks.
+        #
+        # The trick works by:
+        # 1. Finding timesteps where masks contain zeros (episode boundaries)
+        # 2. Processing all timesteps between zeros as a single chunk
+        # 3. Resetting RNN states at episode boundaries (where masks=0)
+        # This avoids unnecessary sequential processing of each timestep
+        has_zeros = ((masks[1:] == 0.0)
+             .any(dim=-1) # (T-1)
+             .nonzero() # (num_true, 1)
+             .squeeze()) # (num_true)
+        has_zeros = [has_zeros.item() + 1] if has_zeros.dim() == 0 else [(idx + 1) for idx in has_zeros.tolist()]
+        has_zeros = [0] + has_zeros + [seq_len]
+
+        # Process sequences between zero masks
+        outputs = []
+        rnn_states = rnn_states.contiguous()
+        for i in range(len(has_zeros) - 1):
+            start_idx = has_zeros[i]
+            end_idx = has_zeros[i + 1]
+
+            # Apply mask to current RNN states (num_layers, batch, hidden_dim)
+            temp_states = (rnn_states * masks[start_idx].view(1, -1, 1))
+
+            # Process current sequence
+            out, rnn_states = self.gru(x[start_idx:end_idx], temp_states)
+            outputs.append(out)
+
+        # Combine outputs and apply layer norm
+        x = torch.cat(outputs, dim=0) # (T, B, hidden_dim)
+        x = x.reshape(seq_len * batch_size, -1) # (T*B, hidden_dim)
+        x = self.gru_layer_norm(x)
+
+        # Transpose back to (B, num_layers, hidden_dim)
+        rnn_states = rnn_states.transpose(0, 1)
+
+        return x, rnn_states
+
+
+    def forward_old(self, x, rnn_states, masks):
+        """
+        Forward pass through the GRU module with masking.
         B is batch and its size is n_agents * n_rollout_threads 
 
         Args:
@@ -52,9 +140,11 @@ class GRUModule(nn.Module):
             rnn_states: (B, num_layers, hidden_dim)
             masks: (T, B, 1) or (B, 1) for single step
         """
-        # Single step case: (B, input_dim) -> (1, B, input_dim)
-        is_single_step = x.dim() == 2
+        # x and rnn_states are (B, input_dim) and (B, num_layers, hidden_dim)
+        is_single_step = x.dim() == 2 and x.size(0) == rnn_states.size(0)
+
         if is_single_step:
+            # Single step case: (B, input_dim) -> (1, B, input_dim) 
             if __debug__:
                 # Single step case: (B, input_dim)
                 assert x.size(1) == self.input_dim, f"Expected input dimension {self.input_dim}, got {x.size(1)}"

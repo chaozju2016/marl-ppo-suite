@@ -1,0 +1,549 @@
+
+"""HAPPO runner."""
+import os
+import time
+import numpy as np
+import torch
+
+from buffers.rollout_storage import RolloutStorage
+from envs import make_vec_envs
+from algos.happo import HAPPO
+
+
+from utils.logger import Logger
+from utils.reward_normalization_new import StandardNormalizer, EMANormalizer, normalise_shared_reward
+from utils.transform_tools import flatten_first_dims, unflatten_first_dim, to_tensor
+
+# import wandb
+# TODO: Add use case for the wandb
+
+
+class HAPPORunner:
+    """
+    Runner class to handle environment interactions and training for HAPPO with agent-specific states.
+
+    This class manages the environment with agent-specific states, agent, buffer, and training process,
+    collecting trajectories and updating the policy.
+    """
+    def __init__(self, args):
+        """
+        Initialize the runner.
+
+        Args:
+            args: Arguments containing training parameters
+        """
+        self.args = args
+
+        self.device = torch.device("cuda" if args.cuda and torch.cuda.is_available() else "cpu")
+
+        # Create training environment using the factory function
+        self.envs = make_vec_envs(args, is_eval=False, num_processes=args.n_rollout_threads)
+        self.eval_envs = make_vec_envs(args, is_eval=True, num_processes=args.n_eval_rollout_threads)
+
+        # Store args for creating evaluation environment later
+        self.args = args
+        self.args.n_agents = self.envs.n_agents
+
+        # Get environment info
+        print(f"n_agents: {self.envs.n_agents}, "
+              f"action_space: {self.envs.action_space}, "
+              f"state_space: {self.envs.share_observation_space}, "
+              f"obs_space: {self.envs.observation_space}, "
+              f"episode_limit: {self.envs.episode_limit}")
+
+        # Create agent
+        self.agent = HAPPO(args,
+                            self.envs.observation_space,
+                            self.envs.share_observation_space,
+                            self.envs.action_space,
+                            self.device)
+
+        # Create buffer
+        self.buffer = RolloutStorage(
+            args,
+            self.envs.n_agents,
+            self.envs.observation_space,
+            self.envs.action_space,
+            self.envs.share_observation_space,
+            self.device)
+
+        # Normalize rewards
+        if args.use_reward_norm:
+            if args.reward_norm_type == "ema":
+                self.reward_norm = EMANormalizer(clip=None)
+            else:
+                self.reward_norm = StandardNormalizer(clip=None)
+
+        # Initialize logger
+        run_name = (
+            f"lr{args.lr}_nenvs{args.n_rollout_threads}_nsteps{args.n_steps}_"
+            f"minibatch{args.num_mini_batch}_epochs{args.ppo_epoch}_"
+            f"gamma{args.gamma}_gae{args.gae_lambda}_"
+            f"clip{args.clip_param}_state{args.state_type}_"
+            f"aid{args.use_agent_id}_dmask{args.use_death_masking}_"
+            f"rnn{args.use_rnn}_{int(time.time())}"
+        )
+
+        run_name = "".join(run_name)
+        env_name = args.env_name + "_" + args.map_name
+        self.logger = Logger(run_name=run_name, env=env_name, algo="HAPPO")
+
+        # Log hyperparameters
+        self.logger.log_hyperparameters({
+            "env_name": env_name,
+            "map_name": args.map_name,
+            "use_rnn": args.use_rnn,
+            "state_type": args.state_type,
+            "use_death_masking": args.use_death_masking,
+            "use_agent_id": args.use_agent_id,
+            "lr": args.lr,
+            "optimizer_eps": args.optimizer_eps,
+            "use_linear_lr_decay": args.use_linear_lr_decay,
+            "use_feature_normalization": args.use_feature_normalization,
+            "use_value_norm": args.use_value_norm,
+            "use_reward_norm": args.use_reward_norm,
+            "actor_gain": args.actor_gain,
+            "hidden_size": args.hidden_size,
+            "rnn_layers": args.rnn_layers,
+            "n_steps": args.n_steps,
+            "data_chunk_length": args.data_chunk_length,
+            "num_mini_batch": args.num_mini_batch,
+            "ppo_epoch": args.ppo_epoch,
+            "gamma": args.gamma,
+            "gae_lambda": args.gae_lambda,
+            "clip_param": args.clip_param,
+            "use_clipped_value_loss": args.use_clipped_value_loss,
+            "use_huber_loss": args.use_huber_loss,
+            "huber_delta": args.huber_delta,
+            "entropy_coef": args.entropy_coef,
+            "use_gae": args.use_gae,
+            "use_proper_time_limits": args.use_proper_time_limits,
+            "use_max_grad_norm": args.use_max_grad_norm,
+            "max_grad_norm": args.max_grad_norm,
+            "use_eval": args.use_eval,
+            "eval_interval": args.eval_interval,
+            "eval_episodes": args.eval_episodes
+        })
+
+
+    def run(self):
+        """
+        Run the training process.
+        """
+        # Training stats
+        self.total_steps = 0
+        self.best_win_rate = 0
+        self.last_battles_game = np.zeros((self.args.n_rollout_threads), dtype=np.float32)
+        self.last_battles_won = np.zeros((self.args.n_rollout_threads), dtype=np.float32)
+        self.episode_rewards = np.zeros((self.args.n_rollout_threads), dtype=np.float32)
+        self.episode_length = np.zeros((self.args.n_rollout_threads), dtype=np.float32)
+        evaluate_num = -1
+
+        # Warmup
+        self.warmup()
+
+        # Training loop
+        while self.total_steps < self.args.max_steps:
+            # Decay learning rate
+            if self.args.use_linear_lr_decay:
+                self.agent.update_learning_rate(self.total_steps)
+
+            # Evaluate agent
+            if self.total_steps // self.args.eval_interval > evaluate_num:
+                self.evaluate(self.args.eval_episodes)
+                evaluate_num += 1
+
+            # Collect trajectories
+            last_infos = self.collect_rollouts()
+            self.total_steps += self.args.n_steps * self.args.n_rollout_threads
+
+            # Compute returns and advantages
+            self.compute_returns()
+
+            # Train agent
+            agents_train_info, critic_train_info = self.agent.train(self.buffer)
+
+            # Log training information
+            self._log_rollout_outcome(last_infos, agents_train_info, critic_train_info, self.total_steps)
+
+            # Reset buffer for next rollout
+            self.buffer.after_update()
+
+        # Final evaluation
+        if self.args.use_eval:
+            print(f"Final evaluation at {self.total_steps}/{self.args.max_steps}")
+            self.evaluate(self.args.eval_episodes)
+
+        self.envs.close()
+        self.eval_envs.close()
+        self.logger.close()
+
+    def warmup(self):
+        """
+        Warmup the agent.
+        """
+        # Reset environment
+        obs, states, available_actions = self.envs.reset()
+
+        # Store initial observations and states
+        self.buffer.obs[0] = np.array(obs)  # (rollout_threads, n_agents, obs_shape)
+
+        # Store state based on type
+        if hasattr(self.buffer, "env_state"):
+            self.buffer.env_state[0] = np.array(states)  # (rollout_threads, state_shape)
+        else:
+            self.buffer.agent_state[0] = np.array(states)  # (rollout_threads, n_agents, state_shape)
+
+        self.buffer.available_actions[0] = np.array(available_actions)  # (rollout_threads, n_agents, n_actions)
+
+    @torch.no_grad()
+    def collect_rollouts(self):
+        """
+        Collect trajectories by interacting with the environment.
+
+        Returns:
+            np.ndarray: Information from the last step of the rollout
+        """
+        # Rollout steps
+        for step in range(self.args.n_steps):
+            # Get actions and values
+            actions_t, action_log_probs_t, actor_rnn_states_t = self.agent.get_actions(
+                to_tensor(self.buffer.obs[step], device=self.device),
+                to_tensor(self.buffer.actor_rnn_states[step], device=self.device) if self.args.use_rnn else None,
+                to_tensor(self.buffer.masks[step], device=self.device),
+                to_tensor(self.buffer.available_actions[step], device=self.device) if self.buffer.available_actions is not None else None,
+                deterministic=False
+            )
+
+            values_t, critic_rnn_states_t = self.agent.get_values(
+                flatten_first_dims(
+                    to_tensor(self.buffer.get_state(step, replicate=True), device=self.device)
+                    ),
+                flatten_first_dims(
+                    to_tensor(self.buffer.obs[step], device=self.device)
+                    ),
+                flatten_first_dims(
+                    to_tensor(self.buffer.active_masks[step], device=self.device)
+                    ),
+                flatten_first_dims(
+                    to_tensor(self.buffer.get_critic_rnn(step, replicate=True), device=self.device)
+                    ) if self.args.use_rnn else None,
+                flatten_first_dims(
+                    to_tensor(self.buffer.masks[step], device=self.device)
+                    )
+            )
+
+            actions = actions_t.cpu().numpy()
+            action_log_probs = action_log_probs_t.cpu().numpy()
+            actor_rnn_states = actor_rnn_states_t.cpu().numpy() if self.args.use_rnn else None
+            
+            # Reshape values and critic_rnn_states
+            shape = (self.args.n_rollout_threads, self.envs.n_agents)
+            values = unflatten_first_dim(values_t.cpu().numpy(), shape)
+            critic_rnn_states = unflatten_first_dim(critic_rnn_states_t.cpu().numpy(), shape) if self.args.use_rnn else None
+
+            # Execute actions in environment
+            obs, share_obs, rewards, dones, infos, available_actions = self.envs.step(actions)
+            # obs: (n_threads, n_agents, obs_dim)
+            # share_obs: (n_threads, n_agents, share_obs_dim)
+            # rewards: (n_threads, n_agents, 1)
+            # dones: (n_threads, n_agents)
+            # infos: (n_threads)
+            # available_actions: None or (n_threads, n_agents, action_number)
+
+            # Update episode stats
+            self.episode_length += 1
+            self.episode_rewards += rewards[:, 0, 0]
+
+            # Normalize rewards if enabled
+            if self.args.use_reward_norm:
+                rewards = normalise_shared_reward(rewards, self.reward_norm)
+
+            # Handle episode termination
+            done_envs = np.all(dones, axis=1)
+            if np.any(done_envs):
+                self._check_episode_outcome(done_envs, self.total_steps + step*self.args.n_rollout_threads)
+
+            # Insert collected data
+            data = (
+                obs, share_obs, rewards, dones,
+                infos, available_actions, values, actions,
+                action_log_probs, actor_rnn_states, critic_rnn_states,
+            )
+            self.insert(data)
+
+        return infos
+
+    def insert(self, data):
+        """
+        Insert a new transition into the buffer.
+
+        Args:
+           data (tuple): Transition data containing:
+            - obs: Agent observations (n_rollout_threads, n_agents, obs_dim)
+            - share_obs: Shared observations (n_rollout_threads, n_agents, share_obs_dim)
+            - rewards: Agent rewards (n_rollout_threads, n_agents, 1)
+            - dones: Done flags (n_rollout_threads, n_agents)
+            - infos: Environment info dicts [n_rollout_threads]
+            - available_actions: Available actions mask (n_rollout_threads, n_agents, action_dim) or None
+            - values: Value estimates (n_rollout_threads, n_agents, 1)
+            - actions: Taken actions (n_rollout_threads, n_agents, action_dim)
+            - action_log_probs: Action log probs (n_rollout_threads, n_agents, action_dim)
+            - actor_rnn_states: Actor RNN states (n_rollout_threads, n_agents, num_layers, hidden_size)
+            - critic_rnn_states: Critic RNN states (n_rollout_threads, n_agents, num_layers, hidden_size)
+        """
+        # Unpack transition data
+        (obs, share_obs, rewards, dones, infos, available_actions,
+        values, actions, action_log_probs, actor_rnn_states, critic_rnn_states) = data
+
+        # Handle episode terminations
+        done_envs = np.all(dones, axis=1)  # Check which environments are done
+        # n_done_envs = done_envs.sum()
+        done_env_mask = done_envs == True
+
+        # Reset RNN states for done environments
+        if self.args.use_rnn:
+            actor_rnn_states[done_env_mask] = 0.0
+            critic_rnn_states[done_env_mask] = 0.0
+
+        # Create masks
+        shape = (self.args.n_rollout_threads, self.envs.n_agents, 1)
+        masks = np.ones(shape, dtype=np.float32)
+        active_masks = np.ones(shape, dtype=np.float32)
+
+        # Update masks for done environments and agents
+        masks[done_env_mask, :, :] = 0.0 # broadcast across agents and last dim
+        active_masks[dones, :] = 0.0 # for individual agent deaths
+        active_masks[done_env_mask, : , :] = 1.0 # for full environment termination
+
+        # Create truncation masks from environment infos
+        truncates = np.array([[info['truncated']] for info in infos]) # (n_rollout_threads, 1)
+        truncates = np.repeat(truncates, self.envs.n_agents, axis=1).reshape(*shape) # (n_rollout_threads, n_agents, 1)
+
+        # Store trajectory in buffer
+        self.buffer.insert(
+            obs=obs,  # (n_rollout_threads, n_agents, n_obs)
+            global_state=share_obs,  # (n_rollout_threads, n_agents, n_state) or (n_rollout_threads, n_state)
+            actions=actions,  # (n_rollout_threads, n_agents, 1)
+            action_log_probs=action_log_probs,  # (n_rollout_threads, n_agents, 1)
+            values=values,  # (n_rollout_threads, n_agents, 1)
+            rewards=rewards,  # (n_rollout_threads, n_agents, 1)
+            masks=masks,  # (n_rollout_threads, n_agents, 1)
+            active_masks=active_masks,  # (n_rollout_threads, n_agents, 1)
+            truncates=truncates,  # (n_rollout_threads, n_agents, 1)
+            available_actions=available_actions,  # (n_rollout_threads, n_agents, n_actions) or None
+            actor_rnn_states=actor_rnn_states,  # (n_rollout_threads, n_agents, num_layers, hidden_size)
+            critic_rnn_states=critic_rnn_states,  # (n_rollout_threads, n_agents, num_layers, hidden_size)
+        )
+
+    @torch.no_grad()
+    def compute_returns(self):
+        """
+        Compute returns and advantages for the collected trajectories.
+        """
+        next_value, _ = self.agent.get_values(
+            flatten_first_dims(
+                to_tensor(self.buffer.get_state(-1, replicate=True), device=self.device)
+            ),
+            flatten_first_dims(
+                to_tensor(self.buffer.obs[-1], device=self.device)
+            ),
+            flatten_first_dims(
+                to_tensor(self.buffer.active_masks[-1], device=self.device)
+            ),
+            flatten_first_dims(
+                to_tensor(self.buffer.get_critic_rnn(-1, replicate=True), device=self.device)
+            ) if self.args.use_rnn else None,
+            flatten_first_dims(
+                to_tensor(self.buffer.masks[-1], device=self.device)
+            )
+        )
+
+        self.buffer.compute_returns_and_advantages(
+            unflatten_first_dim(
+                next_value.cpu().numpy(),
+                (self.args.n_rollout_threads, self.envs.n_agents)
+            ),
+            self.args.gamma,
+            self.args.gae_lambda)
+
+    def _check_episode_outcome(self, done_envs, current_step):
+        """
+        Check the outcome of the episode, and log the results.
+
+        Args:
+            done_envs (np.ndarray): Array of booleans indicating whether each environment is done
+            current_step (int): Current step in the rollout
+        """
+        done_indices = np.where(done_envs)[0]
+
+        # Extract episode lengths and rewards for done environments
+        episode_lens = self.episode_length[done_indices]
+        episode_rews = self.episode_rewards[done_indices]
+
+        # Reset episode lengths and rewards for done environments
+        self.episode_length[done_indices] = 0
+        self.episode_rewards[done_indices] = 0
+
+        # Log metrics
+        self.logger.add_scalar('train/length', np.mean(episode_lens), current_step)
+        self.logger.add_scalar('train/rewards', np.mean(episode_rews), current_step)
+
+    def _log_rollout_outcome(self, last_infos, agent_train_infos, critic_train_info, current_step):
+        """
+        Log the outcome of the rollout.
+
+        Args:
+            last_infos (list): List of dictionaries containing environment information for each thread
+            agent_train_infos (dict): Dictionary containing training information for each agent
+            critic_train_info (dict): Dictionary containing training information for the critic
+            current_step (int): Current step in the rollout
+        """
+        battles_won = []
+        battles_game = []
+        incre_battles_won = []
+        incre_battles_game = []
+
+        for i, info in enumerate(last_infos):
+            if "battles_won" in info.keys():
+                battles_won.append(info["battles_won"])
+                incre_battles_won.append(
+                    info["battles_won"] - self.last_battles_won[i]
+                )
+            if "battles_game" in info.keys():
+                battles_game.append(info["battles_game"])
+                incre_battles_game.append(
+                    info["battles_game"] - self.last_battles_game[i]
+                )
+
+        win_rate = (
+            np.sum(incre_battles_won) / np.sum(incre_battles_game)
+            if np.sum(incre_battles_game) > 0
+            else 0.0
+        )
+        self.logger.add_scalar("train/win_rate", win_rate, current_step)
+
+        self.last_battles_game = battles_game
+        self.last_battles_won = battles_won
+
+        # Log per agent data
+        for agent_id in range(self.args.n_agents):
+            for key, value in agent_train_infos[agent_id].items():
+                agent_k = "train/agent%i/" % agent_id + key
+                self.logger.add_scalar(agent_k, value, current_step)
+        
+        # Log critic
+        for key, value in critic_train_info.items():
+            critic_k = "train/critic/" + key
+            self.logger.add_scalar(critic_k, value, current_step)
+
+    @torch.no_grad()
+    def evaluate(self, num_episodes=10):
+        """
+        Evaluate the current policy, using vec envs.
+
+        Args:
+            num_episodes (int): Number of episodes to evaluate
+
+        Returns:
+            tuple: (mean_rewards, win_rate)
+        """
+
+        # Evaluation stats
+        all_episode_rewards = []
+        all_episode_lengths = []
+        all_win_rates = []
+
+        obs, _, available_actions = self.eval_envs.reset()
+
+        # Episode tracking
+        episode_rewards = np.zeros((self.args.n_eval_rollout_threads), dtype=np.float32)
+        episode_length = np.zeros((self.args.n_eval_rollout_threads), dtype=np.float32)
+
+        # Initialize RNN states
+        if self.args.use_rnn:
+            eval_rnn_states = np.zeros(
+                (
+                    self.args.n_eval_rollout_threads,
+                    self.eval_envs.n_agents,
+                    self.args.rnn_layers,
+                    self.args.hidden_size
+                ),
+                dtype=np.float32)
+        else:
+            eval_rnn_states = None
+
+        # Initialize masks
+        eval_masks = np.ones(
+            (self.args.n_eval_rollout_threads, self.eval_envs.n_agents, 1),
+            dtype=np.float32)
+
+        while True:
+            
+            # Get actions
+            actions_t, _, eval_rnn_states_t = self.agent.get_actions(
+                to_tensor(obs, device=self.device, copy=True),
+                to_tensor(eval_rnn_states, device=self.device, copy=True) if self.args.use_rnn else None,
+                to_tensor(eval_masks, device=self.device, copy=True),
+                to_tensor(available_actions, device=self.device, copy=True) if available_actions is not None else None,
+                deterministic=True
+            )
+
+            # Reshape actions and values
+            shape = (self.args.n_eval_rollout_threads, self.eval_envs.n_agents)
+            actions = actions_t.cpu().numpy()
+            eval_rnn_states = eval_rnn_states_t.cpu().numpy() if self.args.use_rnn else None
+
+            # Execute actions in environment
+            obs, share_obs, rewards, dones, infos, available_actions = self.eval_envs.step(actions)
+
+            # Update episode stats
+            episode_rewards += rewards[:, 0, 0]
+            episode_length += 1
+
+            # Handle episode termination
+            done_envs = np.all(dones, axis=1)
+            done_env_mask = done_envs == True
+
+            # Reset RNN states and masks for done environments
+            if self.args.use_rnn:
+                eval_rnn_states[done_env_mask] = 0.0
+            eval_masks = np.ones(
+                (self.args.n_eval_rollout_threads, self.eval_envs.n_agents, 1),
+                dtype=np.float32,
+            )
+            eval_masks[done_env_mask] = 0.0
+
+            # Update episode stats
+            for i in range(self.args.n_eval_rollout_threads):
+                if done_envs[i]:
+                    all_episode_rewards.append(episode_rewards[i])
+                    all_episode_lengths.append(episode_length[i])
+                    episode_rewards[i] = 0
+                    episode_length[i] = 0
+                    # Check if episode was won
+                    all_win_rates.append(infos[i]["battle_won"])
+
+
+            if len(all_episode_rewards) >= num_episodes:
+                break
+
+        # Calculate statistics
+        mean_rewards = np.mean(all_episode_rewards)
+        mean_length = np.mean(all_episode_lengths)
+        win_rate = np.mean(all_win_rates)
+
+        # Log evaluation stats
+        self.logger.add_scalar('eval/rewards', mean_rewards, self.total_steps)
+        self.logger.add_scalar('eval/win_rate', win_rate, self.total_steps)
+        self.logger.add_scalar('eval/length', mean_length, self.total_steps)
+        print(f"{self.total_steps}/{self.args.max_steps} Evaluation: Mean rewards: {mean_rewards:.2f},  Mean length: {mean_length:.2f}, Win rate: {win_rate:.2f}")
+
+        # Update best win rate
+        if win_rate > self.best_win_rate:
+            self.best_win_rate = win_rate
+            save_path = os.path.join(self.logger.dir_name, f"best-torch.model")
+            self.agent.save(save_path)
+            print(f"Saved best model with win rate {win_rate:.2f} to {save_path}")
+
+        return mean_rewards, win_rate
