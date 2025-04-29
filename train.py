@@ -1,5 +1,6 @@
 import argparse
 import atexit
+import torch
 
 from runners.mappo_runner import MAPPORunner
 from runners.happo_runner import HAPPORunner
@@ -135,6 +136,29 @@ def parse_args():
                         help="Evaluate the model every eval_interval steps")
     parser.add_argument("--eval_episodes", type=int, default=32,
                         help="Number of episodes for evaluation")
+    parser.add_argument("--capture_video", action="store_true", default=False,
+                    help="Capture video during training (default: False)")
+    parser.add_argument("--capture_video_interval", type=int, default=10000,
+                    help="Capture video every capture_video_interval steps")
+
+    # Wandb parameters
+    parser.add_argument('--use_wandb', action='store_true', 
+                        help='Track experiment with Weights & Biases (default: False)')
+    parser.add_argument('--wandb_project', type=str, default='marl-ppo-suite', 
+                        help='Project name for Weights & Biases (default: marl-ppo-suite)')
+    parser.add_argument('--wandb_entity', type=str, default=None, 
+                        help='Entity name (team) for Weights & Biases (default: None)')
+    
+    # Rendering parameters
+    parser.add_argument("--render", action="store_true", default=False,
+                        help="Render the environment during evaluation (default: False)")
+    parser.add_argument("--render_episodes", type=int, default=10,
+                        help="Number of episodes to render")
+    parser.add_argument("--render_model", type=str, default=None,
+                        help="Path to the model to render")
+    parser.add_argument("--render_mode", type=str, default="human", choices=["human", "rgb_array"],
+                        help="Render mode: 'human' or 'rgb_array'")
+
 
     # Performance monitoring
     parser.add_argument("--show_performance_metrics", action="store_true", default=False,
@@ -163,8 +187,8 @@ def main():
     print(f"  Epochs: {args.ppo_epoch}")
     print(f"  Mini-Batches: {args.num_mini_batch}")
 
-    # print(f"Using {'CUDA' if args.cuda and torch.cuda.is_available() else 'CPU'}")
-    # print(f"Using {'recurrent' if args.use_recurrent_policy else 'MLP'} policy")
+    print(f"Using {'CUDA' if args.cuda and torch.cuda.is_available() else 'CPU'}")
+    print(f"Using {'RNN' if args.use_rnn else 'MLP'} policy")
     print("=============================")
 
     try:
@@ -175,7 +199,10 @@ def main():
         else:
             raise ValueError(f"Invalid algorithm: {args.algo}")
 
-        runner.run()
+        if args.render:
+            runner.render(num_episodes=args.render_episodes, model_path=args.render_model, render_mode=args.render_mode)
+        else:
+            runner.run()
     except Exception as e:
         print(f"Error during execution: {e}")
         import traceback
@@ -184,25 +211,9 @@ def main():
         # Clean up environments even if an error occurs
         if runner is not None:
             try:
-                if hasattr(runner, 'envs') and runner.envs is not None:
-                    print("Closing training environments...")
-                    runner.envs.close()
+               runner.close()
             except Exception as e:
-                print(f"Error closing training environments: {e}")
-
-            try:
-                if hasattr(runner, 'eval_envs') and runner.eval_envs is not None:
-                    print("Closing evaluation environments...")
-                    runner.eval_envs.close()
-            except Exception as e:
-                print(f"Error closing evaluation environments: {e}")
-
-            try:
-                if hasattr(runner, 'logger') and runner.logger is not None:
-                    print("Closing logger...")
-                    runner.logger.close()
-            except Exception as e:
-                print(f"Error closing logger: {e}")
+                print(f"Error closing environments: {e}")
 
         # # Force kill any remaining SC2 processes
         # print("Ensuring all SC2 processes are terminated...")

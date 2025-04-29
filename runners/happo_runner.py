@@ -2,6 +2,7 @@
 """HAPPO runner."""
 import os
 import time
+import imageio
 import numpy as np
 import torch
 
@@ -13,6 +14,7 @@ from algos.happo import HAPPO
 from utils.logger import Logger
 from utils.reward_normalization_new import StandardNormalizer, EMANormalizer, normalise_shared_reward
 from utils.transform_tools import flatten_first_dims, unflatten_first_dim, to_tensor
+from utils.video_utils import save_video, get_latest_sc2_replay
 
 # import wandb
 # TODO: Add use case for the wandb
@@ -37,9 +39,12 @@ class HAPPORunner:
         self.device = torch.device("cuda" if args.cuda and torch.cuda.is_available() else "cpu")
 
         # Create training environment using the factory function
-        self.envs = make_vec_envs(args, is_eval=False, num_processes=args.n_rollout_threads)
-        self.eval_envs = make_vec_envs(args, is_eval=True, num_processes=args.n_eval_rollout_threads)
-
+        if args.render:
+            self.envs = make_vec_envs(args, is_eval=True, num_processes=1)
+        else:
+            self.envs = make_vec_envs(args, is_eval=False, num_processes=args.n_rollout_threads)
+            self.eval_envs = make_vec_envs(args, is_eval=True, num_processes=args.n_eval_rollout_threads)
+        
         # Store args for creating evaluation environment later
         self.args = args
         self.args.n_agents = self.envs.n_agents
@@ -58,73 +63,45 @@ class HAPPORunner:
                             self.envs.action_space,
                             self.device)
 
-        # Create buffer
-        self.buffer = RolloutStorage(
-            args,
-            self.envs.n_agents,
-            self.envs.observation_space,
-            self.envs.action_space,
-            self.envs.share_observation_space,
-            self.device)
+        if not args.render:
 
-        # Normalize rewards
-        if args.use_reward_norm:
-            if args.reward_norm_type == "ema":
-                self.reward_norm = EMANormalizer(clip=None)
-            else:
-                self.reward_norm = StandardNormalizer(clip=None)
+            # Create buffer
+            self.buffer = RolloutStorage(
+                args,
+                self.envs.n_agents,
+                self.envs.observation_space,
+                self.envs.action_space,
+                self.envs.share_observation_space,
+                self.device)
 
-        # Initialize logger
-        run_name = (
-            f"lr{args.lr}_nenvs{args.n_rollout_threads}_nsteps{args.n_steps}_"
-            f"minibatch{args.num_mini_batch}_epochs{args.ppo_epoch}_"
-            f"gamma{args.gamma}_gae{args.gae_lambda}_"
-            f"clip{args.clip_param}_state{args.state_type}_"
-            f"aid{args.use_agent_id}_dmask{args.use_death_masking}_"
-            f"rnn{args.use_rnn}_{int(time.time())}"
-        )
+            # Normalize rewards
+            if args.use_reward_norm:
+                if args.reward_norm_type == "ema":
+                    self.reward_norm = EMANormalizer(clip=None)
+                else:
+                    self.reward_norm = StandardNormalizer(clip=None)
 
-        run_name = "".join(run_name)
-        env_name = args.env_name + "_" + args.map_name
-        self.logger = Logger(run_name=run_name, env=env_name, algo="HAPPO")
+            # Initialize logger
+            run_name = (
+                f"lr{args.lr}_nenvs{args.n_rollout_threads}_nsteps{args.n_steps}_"
+                f"minibatch{args.num_mini_batch}_epochs{args.ppo_epoch}_"
+                f"gamma{args.gamma}_gae{args.gae_lambda}_"
+                f"clip{args.clip_param}_state{args.state_type}_"
+                f"aid{args.use_agent_id}_dmask{args.use_death_masking}_"
+                f"rnn{args.use_rnn}_{int(time.time())}"
+            )
 
-        # Log hyperparameters
-        self.logger.log_hyperparameters({
-            "env_name": env_name,
-            "map_name": args.map_name,
-            "use_rnn": args.use_rnn,
-            "state_type": args.state_type,
-            "use_death_masking": args.use_death_masking,
-            "use_agent_id": args.use_agent_id,
-            "lr": args.lr,
-            "optimizer_eps": args.optimizer_eps,
-            "use_linear_lr_decay": args.use_linear_lr_decay,
-            "use_feature_normalization": args.use_feature_normalization,
-            "use_value_norm": args.use_value_norm,
-            "use_reward_norm": args.use_reward_norm,
-            "actor_gain": args.actor_gain,
-            "hidden_size": args.hidden_size,
-            "rnn_layers": args.rnn_layers,
-            "n_steps": args.n_steps,
-            "data_chunk_length": args.data_chunk_length,
-            "num_mini_batch": args.num_mini_batch,
-            "ppo_epoch": args.ppo_epoch,
-            "gamma": args.gamma,
-            "gae_lambda": args.gae_lambda,
-            "clip_param": args.clip_param,
-            "use_clipped_value_loss": args.use_clipped_value_loss,
-            "use_huber_loss": args.use_huber_loss,
-            "huber_delta": args.huber_delta,
-            "entropy_coef": args.entropy_coef,
-            "use_gae": args.use_gae,
-            "use_proper_time_limits": args.use_proper_time_limits,
-            "use_max_grad_norm": args.use_max_grad_norm,
-            "max_grad_norm": args.max_grad_norm,
-            "use_eval": args.use_eval,
-            "eval_interval": args.eval_interval,
-            "eval_episodes": args.eval_episodes
-        })
-
+            run_name = "".join(run_name)
+            env_name = args.env_name + "_" + args.map_name
+            hyperparams = vars(args)
+            self.logger = Logger(
+                run_name=run_name, 
+                env=env_name, 
+                algo="HAPPO",
+                use_wandb=args.use_wandb,
+                wandb_project=args.wandb_project,
+                wandb_entity=args.wandb_entity,
+                config=hyperparams)
 
     def run(self):
         """
@@ -138,6 +115,7 @@ class HAPPORunner:
         self.episode_rewards = np.zeros((self.args.n_rollout_threads), dtype=np.float32)
         self.episode_length = np.zeros((self.args.n_rollout_threads), dtype=np.float32)
         evaluate_num = -1
+        capture_num = -1
 
         # Warmup
         self.warmup()
@@ -150,8 +128,11 @@ class HAPPORunner:
 
             # Evaluate agent
             if self.total_steps // self.args.eval_interval > evaluate_num:
-                self.evaluate(self.args.eval_episodes)
+                should_capture = (self.total_steps // self.args.capture_video_interval > capture_num)
+                self.evaluate(self.args.eval_episodes, should_capture and self.args.capture_video)
                 evaluate_num += 1
+                if should_capture:
+                    capture_num += 1
 
             # Collect trajectories
             last_infos = self.collect_rollouts()
@@ -441,12 +422,13 @@ class HAPPORunner:
             self.logger.add_scalar(critic_k, value, current_step)
 
     @torch.no_grad()
-    def evaluate(self, num_episodes=10):
+    def evaluate(self, num_episodes=10, capture_video=False):
         """
         Evaluate the current policy, using vec envs.
 
         Args:
             num_episodes (int): Number of episodes to evaluate
+            capture_video (bool): Whether to capture video of the evaluation
 
         Returns:
             tuple: (mean_rewards, win_rate)
@@ -456,7 +438,9 @@ class HAPPORunner:
         all_episode_rewards = []
         all_episode_lengths = []
         all_win_rates = []
+        current_episode = 0
 
+        frames = [] if capture_video else None  # For video capture
         obs, _, available_actions = self.eval_envs.reset()
 
         # Episode tracking
@@ -493,7 +477,6 @@ class HAPPORunner:
             )
 
             # Reshape actions and values
-            shape = (self.args.n_eval_rollout_threads, self.eval_envs.n_agents)
             actions = actions_t.cpu().numpy()
             eval_rnn_states = eval_rnn_states_t.cpu().numpy() if self.args.use_rnn else None
 
@@ -517,6 +500,11 @@ class HAPPORunner:
             )
             eval_masks[done_env_mask] = 0.0
 
+            if capture_video and current_episode <= 3:
+                # Render and capture frame of first 3 episodes
+                frame = self.eval_envs.envs[0].render(mode="rgb_array")
+                frames.append(frame)
+
             # Update episode stats
             for i in range(self.args.n_eval_rollout_threads):
                 if done_envs[i]:
@@ -524,11 +512,12 @@ class HAPPORunner:
                     all_episode_lengths.append(episode_length[i])
                     episode_rewards[i] = 0
                     episode_length[i] = 0
+                    current_episode += 1
                     # Check if episode was won
                     all_win_rates.append(infos[i]["battle_won"])
 
 
-            if len(all_episode_rewards) >= num_episodes:
+            if current_episode >= num_episodes:
                 break
 
         # Calculate statistics
@@ -542,6 +531,10 @@ class HAPPORunner:
         self.logger.add_scalar('eval/length', mean_length, self.total_steps)
         print(f"{self.total_steps}/{self.args.max_steps} Evaluation: Mean rewards: {mean_rewards:.2f},  Mean length: {mean_length:.2f}, Win rate: {win_rate:.2f}")
 
+        if capture_video:
+            video = np.stack(frames, axis=0)
+            self.logger.add_video("eval/render", video, self.total_steps)
+
         # Update best win rate
         if win_rate > self.best_win_rate:
             self.best_win_rate = win_rate
@@ -550,3 +543,116 @@ class HAPPORunner:
             print(f"Saved best model with win rate {win_rate:.2f} to {save_path}")
 
         return mean_rewards, win_rate
+    
+
+    @torch.no_grad()
+    def render(self, model_path=None, num_episodes=10, render_mode="human"):
+        """
+        Render the model 
+
+        Args:
+            model_path (str, optional): Path to the model. Defaults to None.
+            num_episodes (int, optional): Number of episodes to render. Defaults to 10.
+            render_mode (str, optional): Rendering mode. Defaults to "human".
+        """        
+        # Load model if provided
+        if model_path is not None:
+            print(f"Loading model from {model_path} for rendering...")
+            self.agent.load(model_path)
+
+        obs, _, available_actions = self.envs.reset()
+
+        # Initialize RNN states
+        if self.args.use_rnn:
+            render_rnn_states = np.zeros(
+                (
+                    1,
+                    self.envs.n_agents,
+                    self.args.rnn_layers,
+                    self.args.hidden_size
+                ),
+                dtype=np.float32)
+        else:
+            render_rnn_states = None
+        
+        # Initialize masks
+        render_masks = np.ones((1, self.envs.n_agents, 1), dtype=np.float32)
+
+        episode_rewards = 0
+        episode_length = 0
+        episode = 0
+
+        frames = [] if render_mode == "rgb_array" else None
+        
+        # Render loop
+        while True:
+            # Get actions
+            actions_t, _, render_rnn_states_t = self.agent.get_actions(
+                to_tensor(obs, device=self.device, copy=True),
+                to_tensor(render_rnn_states, device=self.device, copy=True) if self.args.use_rnn else None,
+                to_tensor(render_masks, device=self.device, copy=True),
+                to_tensor(available_actions, device=self.device, copy=True) if available_actions is not None else None,
+                deterministic=True
+            )
+
+            # Reshape actions and values
+            actions = actions_t.cpu().numpy()
+            render_rnn_states = render_rnn_states_t.cpu().numpy() if self.args.use_rnn else None
+
+            # Execute actions in environment
+            obs, _, rewards, dones, _, available_actions = self.envs.step(actions)
+
+            # Update episode stats
+            episode_rewards += rewards[0, 0, 0]
+            episode_length += 1
+
+            # Handle episode termination
+            done_envs = np.all(dones, axis=1)
+            done_env_mask = done_envs == True
+
+            # Reset RNN states and masks for done environments
+            if self.args.use_rnn:
+                render_rnn_states[done_env_mask] = 0.0
+
+            render_masks = np.ones((1, self.envs.n_agents, 1), dtype=np.float32,)
+            render_masks[done_env_mask] = 0.0
+
+            if render_mode == "rgb_array":
+                # NOTE: This doesn't work for smacv1
+                # Render and capture frame
+                frame = self.envs.envs[0].render(mode=render_mode)
+                frames.append(frame)
+
+            # Update episode stats
+            if done_envs[0]:
+                print(f"Episode rewards: {episode_rewards}, Episode length: {episode_length}")
+                episode_rewards = 0
+                episode_length = 0
+                episode += 1
+                if episode >= num_episodes:
+                    break
+        
+        if render_mode == "rgb_array":
+            save_video(frames, self.args.env_name, self.args.map_name, self.args.algo)
+
+        if "smac" in self.args.env_name:
+            print("Saving Starcraft II replay...")
+            self.envs.envs[0].save_replay()
+
+    def close(self):
+        """
+        Close environments and logger.
+        
+        This method ensures proper cleanup of resources by:
+        1. Closing the render environment if rendering was enabled
+        2. Closing training and evaluation environments
+        3. Closing the logger to ensure all metrics are properly saved
+        
+        Should be called when training is complete or if an exception occurs.
+        """
+        if self.args.render:
+            self.envs.close()
+        else:
+            self.envs.close()
+            self.eval_envs.close()
+            self.logger.close()

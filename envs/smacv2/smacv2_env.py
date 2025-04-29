@@ -152,6 +152,12 @@ class SMACv2Env:
     def close(self):
         self.env.close()
 
+    def render(self, mode="human"):
+        return self.env.render(mode=mode)
+    
+    def save_replay(self):
+        self.env.save_replay()
+
     def _add_agent_id_to_obs(self, obs):
         """
         Add agent ID as a one-hot encoding to each agent's observation.

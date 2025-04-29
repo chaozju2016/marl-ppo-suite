@@ -1,10 +1,13 @@
 import sys
 import os
 from datetime import datetime
+import imageio
 import numpy as np
 import time
 from collections import deque
 import pandas as pd
+import torch
+from typing import Union
 
 
 try:
@@ -12,6 +15,11 @@ try:
 except ImportError:
     SummaryWriter = None  # type: ignore[misc, assignment]
 
+# Conditional import for wandb
+try:
+    import wandb
+except ImportError:
+    wandb = None # type: ignore[misc, assignment]
 
 class Logger:
     """
@@ -32,6 +40,10 @@ class Logger:
         algo="sac",
         env="Env",
         save_csv=False,
+        use_wandb=False,
+        wandb_project="default",
+        wandb_entity=None,
+        config=None
     ):
         self.run_name = run_name
         self.dir_name = os.path.join(folder, env, algo, run_name)
@@ -47,6 +59,24 @@ class Logger:
 
         if self.save_csv:
             self._data = {}  # {step: {key: val, ...}, ...} for CSV logging
+        
+        self.use_wandb = use_wandb and (wandb is not None) # Ensure wandb is imported
+        if self.use_wandb:
+            self.wb = wandb.init(
+                name=run_name, 
+                project=wandb_project, 
+                entity=wandb_entity,
+                dir = self.dir_name, #keeps artifacts in the same folder
+                config=config, #hyper-parameters in UI
+                sync_tensorboard=True # one-line TB-sync
+            )
+            # Define metrics that use step
+            self.wb.define_metric("global_step")
+            # Define all common metrics to use global_step as x-axis
+            self.wb.define_metric("*", step_metric="global_step")
+        
+        if config is not None:
+            self.log_all_hyperparameters(config)
 
     def log_all_hyperparameters(self, hyperparams: dict):
         """Log hyperparameters to TensorBoard and print them to stdout."""
@@ -101,6 +131,11 @@ class Logger:
         """
         # Log to TensorBoard
         self.writer.add_scalar(key, val, step)
+        if self.use_wandb:
+            self.wb.log({
+                "global_step": step,
+                key: val
+                })
 
         # Update smoothing deque
         if key not in self.name_to_values:
@@ -118,6 +153,71 @@ class Logger:
             if time.time() - self.last_csv_save > self.save_every:
                 self.save2csv()
                 self.last_csv_save = time.time()
+    
+    def add_video(self, tag: str, frames: Union[np.ndarray, torch.Tensor],
+                  step: int, fps: int = 30):
+        """
+        Log video clips to TensorBoard and W&B.
+        - frames: np.ndarray or torch.Tensor of shape
+            * (T, H, W)         grayscale single clip
+            * (T, H, W, C)      C=1/3/4 single clip
+            * (T, C, H, W)      single clip
+            * (N, T, H, W, C)   batch of clips
+        """
+        # 1) Bring to numpy uint8 (N, T, H, W, C)
+        if isinstance(frames, torch.Tensor):
+            arr = frames.cpu().numpy()
+        else:
+            arr = np.asarray(frames)
+
+        # Cast floats → [0,255] uint8
+        if arr.dtype != np.uint8:
+            arr = np.clip(arr, 0, 1)
+            arr = (arr * 255).astype(np.uint8)
+
+        # Now handle dims
+        if arr.ndim == 3:  # (T, H, W) → grayscale
+            T, H, W = arr.shape
+            arr = arr.reshape(T, H, W, 1)
+
+        if arr.ndim == 4:
+            # could be (T, H, W, C) or (T, C, H, W)
+            T, D1, D2, D3 = arr.shape
+            if D3 in (1, 3, 4):
+                # (T, H, W, C) → add batch
+                arr = arr[None]  # → (1, T, H, W, C)
+            elif D1 in (1, 3, 4):
+                # (T, C, H, W) → reorder then batch
+                arr = np.transpose(arr, (0, 2, 3, 1))[None]  # → (1, T, H, W, C)
+            else:
+                raise ValueError(f"{tag}: can't infer channels from shape {arr.shape}")
+
+        if arr.ndim == 5:
+            # assume (N, T, H, W, C)
+            N, T, H, W, C = arr.shape
+            if C not in (1, 3, 4):
+                raise ValueError(f"{tag}: last dim={C} is not a valid channel count")
+        else:
+            raise ValueError(f"{tag}: expected 3–5 dims after preprocess, got {arr.shape}")
+
+        # 2) TensorBoard needs (N, T, C, H, W)
+        tb = torch.from_numpy(arr).permute(0, 1, 4, 2, 3)
+        self.writer.add_video(tag, tb, global_step=step, fps=fps)
+
+        # 3) W&B: write MP4 and log
+        if self.use_wandb:
+            # pick first clip
+            clip = arr[0]  # (T, H, W, C)
+            out = os.path.join(self.dir_name, f"{tag.replace('/','_')}_{step}.mp4")
+            # enforce macro_block_size=1 to avoid the 16×16 resize warning
+            with imageio.get_writer(out, 
+                                    fps=fps, 
+                                    codec="libx264", 
+                                    macro_block_size=1) as w:
+                for frame in clip:
+                    w.append_data(frame)
+            video_obj = wandb.Video(out, format="mp4")
+            self.wb.log({tag: video_obj})
 
     def save2csv(self, file_name: str = None):
         """Save logged data to a CSV file."""
@@ -145,6 +245,8 @@ class Logger:
     def close(self):
         """Close the TensorBoard writer and save CSV."""
         self.writer.close()
+        if self.use_wandb:
+            self.wb.finish()
         if self.save_csv:
             self.save2csv()
     

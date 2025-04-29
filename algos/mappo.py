@@ -1,4 +1,5 @@
 
+import os
 import numpy as np
 import torch
 import torch.nn as nn
@@ -420,17 +421,24 @@ class MAPPO:
 
     def save(self, save_path):
         """Save both actor and critic networks."""
+        # Save model weights and optimizer states
+        model_path = save_path
+        args_path = save_path + '.args'
+
         torch.save({
             'actor_state_dict': self.actor.state_dict(),
             'critic_state_dict': self.critic.state_dict(),
             'actor_optimizer_state_dict': self.actor_optimizer.state_dict(),
             'critic_optimizer_state_dict': self.critic_optimizer.state_dict(),
-            'args': self.args,
-        }, save_path)
+        }, model_path)
 
-    def load(self, model_path):
+        # Save args separately
+        torch.save({'args': self.args}, args_path)
+
+    # NOTE: Remove this weights_only argument, make sure always true
+    def load(self, model_path, weights_only=False):
         """Load both actor and critic networks."""
-        checkpoint = torch.load(model_path, map_location=self.device)
+        checkpoint = torch.load(model_path, map_location=self.device, weights_only=weights_only)
 
         # Load network states
         self.actor.load_state_dict(checkpoint['actor_state_dict'])
@@ -439,3 +447,11 @@ class MAPPO:
         # Load optimizer states
         self.actor_optimizer.load_state_dict(checkpoint['actor_optimizer_state_dict'])
         self.critic_optimizer.load_state_dict(checkpoint['critic_optimizer_state_dict'])
+
+        # Load args separately if they exist
+        args_path = model_path + '.args'
+        if os.path.exists(args_path):
+            args_dict = torch.load(args_path, weights_only=False)
+            self.args = args_dict['args']
+
+

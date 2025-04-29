@@ -81,6 +81,19 @@ def make_env(args, rank=None, is_eval=False):
         elif env_name == "smacv2":
             from envs.smacv2 import SMACv2Env
             
+            import random
+            _orig_shuffle = random.shuffle
+
+            def _patched_shuffle(seq, *args, **kwargs):
+                # drop any extra positional args, but pass through a keyword "random" if given
+                if args:
+                    # args[0] is the old “random” function pysc2 passed; 
+                    # shuffle() will call random() from the module if no keyword is provided.
+                    return _orig_shuffle(seq, **kwargs)
+                return _orig_shuffle(seq, **kwargs)
+
+            random.shuffle = _patched_shuffle
+            
             env = SMACv2Env(args)
         else:
             raise ValueError(f"Unknown environment name: {env_name}")

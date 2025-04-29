@@ -7,21 +7,20 @@ dependencies:
   - python=3.11
   - pytorch>=2.0.0
   - torchvision
+  - moviepy # for logger
+  - imageio
+  - imageio-ffmpeg
+  - numpy>=1.20.0
+  - matplotlib
+  - pandas
+  - cloudpickle>=2.2.0
+  - tqdm
   - pip
+  # --- Pip Dependencies ---
   - pip:
-      # Core dependencies
-      - numpy>=1.20.0
-      - matplotlib
-      - pandas
       - tensorboard
-      - cloudpickle>=2.2.0
-
-      # RL environments
-      - pysc2>=3.0.0
+      - pysc2>=3.0.0 # If specific version/build needed via pip
       - git+https://github.com/oxwhirl/smac.git
       - git+https://github.com/oxwhirl/smacv2.git
       - gymnasium
-
-      # Utilities
-      - tqdm # Progress bars
-      - wandb # Optional: Weights & Biases for experiment tracking
+      - wandb # Optional: Weights & Biases often installed via pip
