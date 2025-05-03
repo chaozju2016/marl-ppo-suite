@@ -94,8 +94,6 @@ class MAPPORunner:
                 env=env_name, 
                 algo="MAPPO",
                 use_wandb=args.use_wandb,
-                wandb_project=args.wandb_project,
-                wandb_entity=args.wandb_entity,
                 config=hyperparams)
 
     def run(self):
@@ -110,6 +108,7 @@ class MAPPORunner:
         self.episode_rewards = np.zeros((self.args.n_rollout_threads), dtype=np.float32)
         self.episode_length = np.zeros((self.args.n_rollout_threads), dtype=np.float32)
         evaluate_num = -1
+        capture_num = -1
 
         # Warmup
         self.warmup()
@@ -160,6 +159,18 @@ class MAPPORunner:
         if self.args.use_eval:
             print(f"Final evaluation at {self.total_steps}/{self.args.max_steps}")
             self.evaluate(self.args.eval_episodes)
+        
+        # Save final model
+        save_path = os.path.join(self.logger.dir_name, f"final-torch.model")
+        self.agent.save(save_path)
+        self.logger.log_model(
+                file_path=save_path,
+                name="final-model",
+                artifact_type="model",
+                metadata={"step": self.total_steps},
+                alias="latest"
+        )
+        print(f"Saved final model to {save_path}")
 
         self.envs.close()
         self.eval_envs.close()
@@ -457,13 +468,13 @@ class MAPPORunner:
         self.last_battles_won = battles_won
         self.logger.log_training(
                 {
-                    "train/critic_loss":  train_info['critic_loss'],
-                    "train/actor_loss": train_info['actor_loss'],
-                    "train/entropy_loss": train_info['entropy_loss'],
-                    "train/approx_kl": train_info['approx_kl'],
-                    "train/clip_ratio": train_info['clip_ratio'],
-                    "train/actor_grad_norm": train_info['actor_grad_norm'],
-                    "train/critic_grad_norm": train_info['critic_grad_norm'],
+                    "train/critic/critic_loss":  train_info['critic_loss'],
+                    "train/agent0/actor_loss": train_info['actor_loss'],
+                    "train/agent0/entropy_loss": train_info['entropy_loss'],
+                    "train/agent0/approx_kl": train_info['approx_kl'],
+                    "train/agent0/clip_ratio": train_info['clip_ratio'],
+                    "train/agent0/actor_grad_norm": train_info['actor_grad_norm'],
+                    "train/critic/critic_grad_norm": train_info['critic_grad_norm'],
                 }
             )
 
@@ -597,7 +608,15 @@ class MAPPORunner:
             self.best_win_rate = win_rate
             save_path = os.path.join(self.logger.dir_name, f"best-torch.model")
             self.agent.save(save_path)
-            print(f"Saved best model with win rate {win_rate:.2f} to {save_path}")
+            self.logger.log_model(
+                file_path=save_path,
+                name="best-model",
+                artifact_type="model",
+                metadata={"win_rate": win_rate,
+                        "step":     self.total_steps},
+                alias="latest"
+            )
+            print(f"Saved best model with win rate {win_rate:.2f}")
 
         return mean_rewards, win_rate
     

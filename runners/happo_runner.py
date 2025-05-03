@@ -16,10 +16,6 @@ from utils.reward_normalization_new import StandardNormalizer, EMANormalizer, no
 from utils.transform_tools import flatten_first_dims, unflatten_first_dim, to_tensor
 from utils.video_utils import save_video, get_latest_sc2_replay
 
-# import wandb
-# TODO: Add use case for the wandb
-
-
 class HAPPORunner:
     """
     Runner class to handle environment interactions and training for HAPPO with agent-specific states.
@@ -99,8 +95,6 @@ class HAPPORunner:
                 env=env_name, 
                 algo="HAPPO",
                 use_wandb=args.use_wandb,
-                wandb_project=args.wandb_project,
-                wandb_entity=args.wandb_entity,
                 config=hyperparams)
 
     def run(self):
@@ -154,6 +148,18 @@ class HAPPORunner:
         if self.args.use_eval:
             print(f"Final evaluation at {self.total_steps}/{self.args.max_steps}")
             self.evaluate(self.args.eval_episodes)
+
+        # Save final model
+        save_path = os.path.join(self.logger.dir_name, f"final-torch.model")
+        self.agent.save(save_path)
+        self.logger.log_model(
+                file_path=save_path,
+                name="final-model",
+                artifact_type="model",
+                metadata={"step": self.total_steps},
+                alias="latest"
+        )
+        print(f"Saved final model to {save_path}")
 
         self.envs.close()
         self.eval_envs.close()
@@ -540,7 +546,15 @@ class HAPPORunner:
             self.best_win_rate = win_rate
             save_path = os.path.join(self.logger.dir_name, f"best-torch.model")
             self.agent.save(save_path)
-            print(f"Saved best model with win rate {win_rate:.2f} to {save_path}")
+            self.logger.log_model(
+                file_path=save_path,
+                name="best-model",
+                artifact_type="model",
+                metadata={"win_rate": win_rate,
+                        "step":     self.total_steps},
+                alias="latest"
+            )
+            print(f"Saved best model with win rate {win_rate:.2f}")
 
         return mean_rewards, win_rate
     

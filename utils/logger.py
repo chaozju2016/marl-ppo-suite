@@ -7,8 +7,9 @@ import time
 from collections import deque
 import pandas as pd
 import torch
-from typing import Union
+from typing import Optional, Union
 
+from utils.config import load_wandb_config
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -27,26 +28,29 @@ class Logger:
     
     Args:
         run_name (str): Unique identifier for the run. Defaults to current timestamp.
-        folder (str): Root directory for storing logs. Defaults to 'runs'.
+        runs_root (str): Root directory for storing logs. Defaults to 'runs'.
         algo (str): Algorithm name, used in directory structure. Defaults to 'sac'.
         env (str): Environment name, used in directory structure. Defaults to 'Env'.
         save_csv (bool): Whether to log metrics to a CSV file. Defaults to False.
+        use_wandb (bool): Whether to use Weights & Biases for logging. Defaults to False.
+        config (dict): Configuration dictionary to log. Defaults to None.
     """
-    
     def __init__(
-         self,
-        run_name=datetime.now().strftime("%Y-%m-%d_%H%M%S"),
-        folder="runs",
-        algo="sac",
-        env="Env",
-        save_csv=False,
-        use_wandb=False,
-        wandb_project="default",
-        wandb_entity=None,
-        config=None
+        self,
+        run_name: str = datetime.now().strftime("%Y-%m-%d_%H%M%S"),
+        runs_root: str | None = None,        
+        algo: str = "sac",
+        env: str = "Env",
+        save_csv: bool = False,
+        use_wandb: bool = False,
+        config: dict | None = None,
     ):
+        # resolve the root once per instantiation
+        if runs_root is None:
+            runs_root = os.getenv("RUNS_DIR", "runs")
+
         self.run_name = run_name
-        self.dir_name = os.path.join(folder, env, algo, run_name)
+        self.dir_name = os.path.join(runs_root, env, algo, run_name)
         os.makedirs(self.dir_name, exist_ok=True)
 
         self.writer = SummaryWriter(self.dir_name)
@@ -62,18 +66,26 @@ class Logger:
         
         self.use_wandb = use_wandb and (wandb is not None) # Ensure wandb is imported
         if self.use_wandb:
+            display_name = f"{algo}_{run_name}"  # e.g., "MAPPO_lr0.0005_nenvs4..."
+            wandb_config = load_wandb_config()
+
+            print(f"WANDB_ENTITY: {wandb_config['entity']}")
+            print(f"WANDB_PROJECT: {wandb_config['project']}")
+
+            wandb.login(key=wandb_config["api_key"])
+            
             self.wb = wandb.init(
-                name=run_name, 
-                project=wandb_project, 
-                entity=wandb_entity,
+                name=display_name,
+                group=env,
+                project=wandb_config["project"],
+                entity=wandb_config["entity"],
                 dir = self.dir_name, #keeps artifacts in the same folder
                 config=config, #hyper-parameters in UI
-                sync_tensorboard=True # one-line TB-sync
+                sync_tensorboard=False, # one-line TB-sync
+                resume="allow"  # Allow resuming if needed
             )
-            # Define metrics that use step
-            self.wb.define_metric("global_step")
-            # Define all common metrics to use global_step as x-axis
-            self.wb.define_metric("*", step_metric="global_step")
+
+            self._last_model_version = {}
         
         if config is not None:
             self.log_all_hyperparameters(config)
@@ -132,10 +144,7 @@ class Logger:
         # Log to TensorBoard
         self.writer.add_scalar(key, val, step)
         if self.use_wandb:
-            self.wb.log({
-                "global_step": step,
-                key: val
-                })
+            self.wb.log({key: val}, step=step)
 
         # Update smoothing deque
         if key not in self.name_to_values:
@@ -201,8 +210,12 @@ class Logger:
             raise ValueError(f"{tag}: expected 3–5 dims after preprocess, got {arr.shape}")
 
         # 2) TensorBoard needs (N, T, C, H, W)
-        tb = torch.from_numpy(arr).permute(0, 1, 4, 2, 3)
-        self.writer.add_video(tag, tb, global_step=step, fps=fps)
+        # NOTE: Tensorboard video is very slow.
+        # if isinstance(self.writer, SummaryWriter) and self.args.log_tensorboard_videos:
+        #     from threading import Thread
+        #     tb_array = torch.from_numpy(arr).permute(0, 1, 4, 2, 3)
+        #     thread = Thread(target=self.writer.add_video, args=(tag, tb_array, step, fps))
+        #     thread.start()
 
         # 3) W&B: write MP4 and log
         if self.use_wandb:
@@ -213,11 +226,64 @@ class Logger:
             with imageio.get_writer(out, 
                                     fps=fps, 
                                     codec="libx264", 
-                                    macro_block_size=1) as w:
+                                    macro_block_size=1,
+                                    quality=5) as w:
                 for frame in clip:
                     w.append_data(frame)
             video_obj = wandb.Video(out, format="mp4")
-            self.wb.log({tag: video_obj})
+            self.wb.log({tag: video_obj}, step=step)
+
+    def log_model(self,
+                file_path: str,
+                name: str = "best-model",
+                artifact_type: str = "model",
+                alias: str = 'latest',
+                metadata: dict = None,):
+        """
+        Upload a model checkpoint as a W&B Artifact.
+        
+        Args:
+            file_path: path to the saved model (e.g. 'runs/.../best-torch.model')
+            name:      user‐friendly name of the artifact in W&B
+            artifact_type: e.g. 'model', 'dataset', etc.
+            alias:     e.g. 'latest' or 'v1'; if provided, W&B will attach this alias
+            metadata:  free‐form dict to record e.g. {'win_rate':0.75}
+        """
+        if not self.use_wandb:
+            return
+
+        # Include run ID in the artifact name to make it unique per run
+        run_id = self.wb.id
+        unique_name = f"{name}-{run_id}"
+
+        artifact = wandb.Artifact(
+            name=unique_name,
+            type=artifact_type,
+            metadata=metadata or {}
+        )
+        artifact.add_file(file_path)
+
+        # Log the artifact and optionally attach an alias
+        logged = self.wb.log_artifact(artifact, aliases=[alias] if alias else None)
+        if alias:
+            logged.wait()               # ensure it’s uploaded
+        
+        # Track the version for cleanup
+        if alias == 'latest':
+            previous_version = self._last_model_version.get(unique_name, None)
+            # delete the previous version if it exists 
+            if previous_version is not None:
+                try:
+                    api = wandb.Api()
+                    entity  = self.wb.entity
+                    project = self.wb.project
+                    artifact_path = f"{entity}/{project}/{unique_name}:{previous_version}"
+                    api.artifact(artifact_path).delete()
+                except Exception as e:
+                    print(f"Warning: failed to delete previous artifact {artifact_path}: {e}")
+            
+            # record this version
+            self._last_model_version[unique_name] = logged.version
 
     def save2csv(self, file_name: str = None):
         """Save logged data to a CSV file."""
