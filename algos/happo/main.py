@@ -1,6 +1,7 @@
 
 """HAPPO algorithm."""
 import numpy as np
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -407,7 +408,7 @@ class HAPPO:
             'critic_lr': self.critic_optimizer.param_groups[0]['lr']
         }
     
-    def save(self, save_path):
+    def save(self, save_path, save_args=False):
         """Save both actor and critic networks."""
         models_dict = {}
 
@@ -418,13 +419,16 @@ class HAPPO:
 
         models_dict['critic_state_dict'] = self.critic.state_dict()
         models_dict['critic_optimizer_state_dict'] = self.critic_optimizer.state_dict()
-        models_dict['args'] = self.args
-
         torch.save(models_dict, save_path)
+
+        # Save args separately
+        if save_args:
+            args_path = save_path + '.args'
+            torch.save({'args': self.args}, args_path)
 
     def load(self, model_path):
         """Load both actor and critic networks."""
-        checkpoint = torch.load(model_path, map_location=self.device)
+        checkpoint = torch.load(model_path, map_location=self.device, weights_only=True)
 
         # Load actors 
         for i, agent in enumerate(self.happo_agents):
@@ -434,3 +438,9 @@ class HAPPO:
         # Load critic models
         self.critic.load_state_dict(checkpoint['critic_state_dict'])
         self.critic_optimizer.load_state_dict(checkpoint['critic_optimizer_state_dict'])
+
+        # Load args separately if they exist
+        args_path = model_path + '.args'
+        if os.path.exists(args_path):
+            args_dict = torch.load(args_path, weights_only=False)
+            self.args = args_dict['args']

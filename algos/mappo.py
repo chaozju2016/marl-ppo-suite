@@ -419,11 +419,11 @@ class MAPPO:
             'critic_lr': self.critic_optimizer.param_groups[0]['lr']
         }
 
-    def save(self, save_path):
+    def save(self, save_path, save_args=False):
         """Save both actor and critic networks."""
         # Save model weights and optimizer states
         model_path = save_path
-        args_path = save_path + '.args'
+       
 
         torch.save({
             'actor_state_dict': self.actor.state_dict(),
@@ -433,12 +433,13 @@ class MAPPO:
         }, model_path)
 
         # Save args separately
-        torch.save({'args': self.args}, args_path)
+        if save_args:
+            args_path = save_path + '.args'
+            torch.save({'args': self.args}, args_path)
 
-    # NOTE: Remove this weights_only argument, make sure always true
-    def load(self, model_path, weights_only=False):
+    def load(self, model_path):
         """Load both actor and critic networks."""
-        checkpoint = torch.load(model_path, map_location=self.device, weights_only=weights_only)
+        checkpoint = torch.load(model_path, map_location=self.device, weights_only=True)
 
         # Load network states
         self.actor.load_state_dict(checkpoint['actor_state_dict'])
