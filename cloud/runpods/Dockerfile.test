@@ -1,0 +1,55 @@
+# Use multi-stage build to reduce image size
+# Stage 1: Download and extract StarCraft II
+FROM ubuntu:22.04 AS sc2
+
+RUN apt-get update && apt-get install -y wget unzip && rm -rf /var/lib/apt/lists/*
+
+# Download StarCraft II
+WORKDIR /root
+RUN mkdir -p /root/StarCraftII/Maps/SMAC_Maps && \
+    wget --no-check-certificate http://blzdistsc2-a.akamaihd.net/Linux/SC2.4.10.zip \
+    && unzip -P iagreetotheeula SC2.4.10.zip \
+    && rm SC2.4.10.zip
+
+# Download SMAC maps
+RUN wget https://github.com/oxwhirl/smacv2/releases/download/maps/SMAC_Maps.zip \
+    && unzip SMAC_Maps.zip -d /root/StarCraftII/Maps/SMAC_Maps \
+    && rm SMAC_Maps.zip
+
+# Stage 2: Final image with PyTorch and GPU support
+FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+
+# Install minimal system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    libgl1-mesa-glx \
+    libosmesa6-dev \
+    libglfw3 \
+    libglew-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy StarCraft II from builder stage
+COPY --from=sc2 /root/StarCraftII /root/StarCraftII
+ENV SC2PATH=/root/StarCraftII
+
+# Set working directory
+WORKDIR /app
+
+# Copy requirements file
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir \
+    git+https://github.com/oxwhirl/smac.git \
+    git+https://github.com/oxwhirl/smacv2.git
+
+# Copy project files
+COPY . .
+
+# Make scripts executable
+RUN chmod +x cloud/train_simple.sh cloud/runpods/entrypoint.sh
+
+# Set entrypoint
+ENTRYPOINT ["./cloud/runpods/entrypoint.sh"]
+CMD ["--map_name", "3m", "--algo", "mappo", "--n_rollout_threads", "8"]

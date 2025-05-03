@@ -1,0 +1,17 @@
+numpy>=2.2.2
+torch>=2.0.0
+gymnasium>=1.0.0
+cloudpickle>=2.2.0
+imageio
+imageio-ffmpeg
+matplotlib
+pandas
+tensorboard
+tqdm
+wandb
+pysc2>=3.0.0
+python-dotenv
+
+# SMAC environments - these will be installed from GitHub in the Dockerfile
+# git+https://github.com/oxwhirl/smac.git
+# git+https://github.com/oxwhirl/smacv2.git

@@ -1,0 +1,26 @@
+version: "3"
+
+services:
+  marl-ppo-suite:
+    build:
+      context: ..
+      dockerfile: cloud/runpods/Dockerfile
+    image: marl-ppo-suite:pytorch2.5
+    container_name: marl-ppo-suite
+    volumes:
+      - ../runs:/app/runs
+    env_file:
+      - ../.env
+    environment:
+      - SC2PATH=/root/StarCraftII
+    # GPU configuration is handled differently based on platform
+    # For Linux with NVIDIA GPUs, uncomment the following:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    # For macOS, GPU passthrough is handled by Docker Desktop
+    command: --map_name 3m --algo mappo --n_rollout_threads 8
