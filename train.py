@@ -130,25 +130,23 @@ def parse_args():
                         help="Delta for huber loss")
 
     # Evaluation parameters
+    parser.add_argument("--log_interval", type=int, default=10000,
+                        help="Log interval")
     parser.add_argument("--use_eval", action="store_false",
                         help="Evaluate the model during training (default: True)")
-    parser.add_argument("--eval_interval", type=int, default=10000,
+    parser.add_argument("--eval_interval", type=int, default=50000,
                         help="Evaluate the model every eval_interval steps")
     parser.add_argument("--eval_episodes", type=int, default=32,
                         help="Number of episodes for evaluation")
     parser.add_argument("--capture_video", action="store_true", default=False,
                     help="Capture video during training (default: False)")
-    parser.add_argument("--capture_video_interval", type=int, default=10000,
+    parser.add_argument("--capture_video_interval", type=int, default=100000,
                     help="Capture video every capture_video_interval steps")
 
     # Wandb parameters
     parser.add_argument('--use_wandb', action='store_true', 
                         help='Track experiment with Weights & Biases (default: False)')
-    parser.add_argument('--wandb_project', type=str, default='marl-ppo-suite', 
-                        help='Project name for Weights & Biases (default: marl-ppo-suite)')
-    parser.add_argument('--wandb_entity', type=str, default=None, 
-                        help='Entity name (team) for Weights & Biases (default: None)')
-    
+ 
     # Rendering parameters
     parser.add_argument("--render", action="store_true", default=False,
                         help="Render the environment during evaluation (default: False)")
@@ -158,7 +156,6 @@ def parse_args():
                         help="Path to the model to render")
     parser.add_argument("--render_mode", type=str, default="human", choices=["human", "rgb_array"],
                         help="Render mode: 'human' or 'rgb_array'")
-
 
     # Performance monitoring
     parser.add_argument("--show_performance_metrics", action="store_true", default=False,
