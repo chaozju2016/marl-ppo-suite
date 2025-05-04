@@ -109,6 +109,7 @@ class MAPPORunner:
         self.episode_length = np.zeros((self.args.n_rollout_threads), dtype=np.float32)
         evaluate_num = -1
         capture_num = -1
+        log_num = 0
 
         # Warmup
         self.warmup()
@@ -150,7 +151,9 @@ class MAPPORunner:
                 train_info = self.agent.train(self.buffer)
 
             # Log training information
-            self._log_rollout_outcome(last_infos, rollout_data, train_info, self.total_steps)
+            if self.total_steps // self.args.log_interval > log_num:
+                self._log_rollout_outcome(last_infos, rollout_data, train_info, self.total_steps)
+                log_num += 1
 
             # Reset buffer for next rollout
             self.buffer.after_update()
@@ -279,12 +282,12 @@ class MAPPORunner:
             # Handle episode termination
             done_envs = np.all(dones, axis=1)
             if np.any(done_envs):
-                self._check_episode_outcome(done_envs, self.total_steps + step*self.args.n_rollout_threads)
-                # done_indices = np.where(done_envs)[0]
-                # rollout_data['episode_lengths'].extend(self.episode_length[done_indices].tolist())
-                # rollout_data['episode_rewards'].extend(self.episode_rewards[done_indices].tolist())
-                # self.episode_length[done_indices] = 0
-                # self.episode_rewards[done_indices] = 0
+                # self._check_episode_outcome(done_envs, self.total_steps + step*self.args.n_rollout_threads)
+                done_indices = np.where(done_envs)[0]
+                rollout_data['episode_lengths'].extend(self.episode_length[done_indices].tolist())
+                rollout_data['episode_rewards'].extend(self.episode_rewards[done_indices].tolist())
+                self.episode_length[done_indices] = 0
+                self.episode_rewards[done_indices] = 0
 
 
             # Insert collected data
@@ -437,8 +440,8 @@ class MAPPORunner:
             current_step (int): Current step in the rollout
         """
         # Log episode-specific data
-        # self.logger.add_scalar('train/length', np.mean(rollout_data['episode_lengths']), current_step)
-        # self.logger.add_scalar('train/rewards', np.mean(rollout_data['episode_rewards']), current_step)
+        self.logger.add_scalar('train/length', np.mean(rollout_data['episode_lengths']), current_step)
+        self.logger.add_scalar('train/rewards', np.mean(rollout_data['episode_rewards']), current_step)
 
         battles_won = []
         battles_game = []

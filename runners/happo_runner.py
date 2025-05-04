@@ -110,6 +110,7 @@ class HAPPORunner:
         self.episode_length = np.zeros((self.args.n_rollout_threads), dtype=np.float32)
         evaluate_num = -1
         capture_num = -1
+        log_num = 0
 
         # Warmup
         self.warmup()
@@ -129,7 +130,7 @@ class HAPPORunner:
                     capture_num += 1
 
             # Collect trajectories
-            last_infos = self.collect_rollouts()
+            last_infos, rollout_data = self.collect_rollouts()
             self.total_steps += self.args.n_steps * self.args.n_rollout_threads
 
             # Compute returns and advantages
@@ -139,7 +140,9 @@ class HAPPORunner:
             agents_train_info, critic_train_info = self.agent.train(self.buffer)
 
             # Log training information
-            self._log_rollout_outcome(last_infos, agents_train_info, critic_train_info, self.total_steps)
+            if self.total_steps // self.args.log_interval > log_num:
+                self._log_rollout_outcome(last_infos, rollout_data, agents_train_info, critic_train_info, self.total_steps)
+                log_num += 1
 
             # Reset buffer for next rollout
             self.buffer.after_update()
@@ -191,6 +194,11 @@ class HAPPORunner:
         Returns:
             np.ndarray: Information from the last step of the rollout
         """
+        rollout_data = {
+            'episode_lengths': [],
+            'episode_rewards': []
+        }
+
         # Rollout steps
         for step in range(self.args.n_steps):
             # Get actions and values
@@ -252,7 +260,12 @@ class HAPPORunner:
             # Handle episode termination
             done_envs = np.all(dones, axis=1)
             if np.any(done_envs):
-                self._check_episode_outcome(done_envs, self.total_steps + step*self.args.n_rollout_threads)
+                # self._check_episode_outcome(done_envs, self.total_steps + step*self.args.n_rollout_threads)
+                done_indices = np.where(done_envs)[0]
+                rollout_data['episode_lengths'].extend(self.episode_length[done_indices].tolist())
+                rollout_data['episode_rewards'].extend(self.episode_rewards[done_indices].tolist())
+                self.episode_length[done_indices] = 0
+                self.episode_rewards[done_indices] = 0
 
             # Insert collected data
             data = (
@@ -262,7 +275,7 @@ class HAPPORunner:
             )
             self.insert(data)
 
-        return infos
+        return infos, rollout_data
 
     def insert(self, data):
         """
@@ -379,16 +392,21 @@ class HAPPORunner:
         self.logger.add_scalar('train/length', np.mean(episode_lens), current_step)
         self.logger.add_scalar('train/rewards', np.mean(episode_rews), current_step)
 
-    def _log_rollout_outcome(self, last_infos, agent_train_infos, critic_train_info, current_step):
+    def _log_rollout_outcome(self, last_infos, rollout_data, agent_train_infos, critic_train_info, current_step):
         """
         Log the outcome of the rollout.
 
         Args:
             last_infos (list): List of dictionaries containing environment information for each thread
+            rollout_data (dict): Dictionary containing episode-specific data
             agent_train_infos (dict): Dictionary containing training information for each agent
             critic_train_info (dict): Dictionary containing training information for the critic
             current_step (int): Current step in the rollout
         """
+        # Log episode-specific data
+        self.logger.add_scalar('train/length', np.mean(rollout_data['episode_lengths']), current_step)
+        self.logger.add_scalar('train/rewards', np.mean(rollout_data['episode_rewards']), current_step)
+
         battles_won = []
         battles_game = []
         incre_battles_won = []
@@ -551,7 +569,7 @@ class HAPPORunner:
                 name="best-model",
                 artifact_type="model",
                 metadata={"win_rate": win_rate,
-                        "step":     self.total_steps},
+                        "step":  self.total_steps},
                 alias="latest"
             )
             print(f"Saved best model with win rate {win_rate:.2f}")
