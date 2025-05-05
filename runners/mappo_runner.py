@@ -21,17 +21,16 @@ class MAPPORunner:
     This class manages the environment with agent-specific states, agent, buffer, and training process,
     collecting trajectories and updating the policy.
     """
-    def __init__(self, args):
+    def __init__(self, args, device):
         """
         Initialize the runner.
 
         Args:
             args: Arguments containing training parameters
+            device: Torch device to use for computations
         """
         self.args = args
-
-        # torch.backends.deterministic = args.cuda_deterministic
-        self.device = torch.device("cuda" if args.cuda and torch.cuda.is_available() else "cpu")
+        self.device = device
 
         # Create training environment using the factory function
         if args.render:
@@ -127,8 +126,7 @@ class MAPPORunner:
                 evaluate_num += 1
                 if should_capture:
                     capture_num += 1
-
-
+            
             # Collect trajectories
             last_infos, rollout_data = self.collect_rollouts()
             self.total_steps += self.args.n_steps * self.args.n_rollout_threads
@@ -156,7 +154,7 @@ class MAPPORunner:
                 log_num += 1
 
             # Reset buffer for next rollout
-            self.buffer.after_update()
+            self.buffer.after_update()     
 
         # Final evaluation
         if self.args.use_eval:
@@ -572,7 +570,7 @@ class MAPPORunner:
 
             if capture_video and current_episode <= 3:
                 # Render and capture frame of first 3 episodes
-                frame = self.eval_envs.envs[0].render(mode="rgb_array")
+                frame = self.eval_envs.render(mode="rgb_array", env_id=0)
                 frames.append(frame)
 
             # Update episode stats
@@ -708,7 +706,7 @@ class MAPPORunner:
 
             if self.args.env_name == "smacv2" and render_mode == "rgb_array":
                 # Render and capture frame
-                frame = self.envs.envs[0].render(mode=render_mode)
+                frame = self.envs.render(mode=render_mode, env_id=0)
                 frames.append(frame)
 
             # Update episode stats

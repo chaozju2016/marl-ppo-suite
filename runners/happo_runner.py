@@ -23,16 +23,16 @@ class HAPPORunner:
     This class manages the environment with agent-specific states, agent, buffer, and training process,
     collecting trajectories and updating the policy.
     """
-    def __init__(self, args):
+    def __init__(self, args, device):
         """
         Initialize the runner.
 
         Args:
             args: Arguments containing training parameters
+            device: Torch device to use for computations
         """
         self.args = args
-
-        self.device = torch.device("cuda" if args.cuda and torch.cuda.is_available() else "cpu")
+        self.device = device
 
         # Create training environment using the factory function
         if args.render:
@@ -526,7 +526,7 @@ class HAPPORunner:
 
             if capture_video and current_episode <= 3:
                 # Render and capture frame of first 3 episodes
-                frame = self.eval_envs.envs[0].render(mode="rgb_array")
+                frame = self.eval_envs.render(mode="rgb_array", env_id=0)
                 frames.append(frame)
 
             # Update episode stats
@@ -649,10 +649,9 @@ class HAPPORunner:
             render_masks = np.ones((1, self.envs.n_agents, 1), dtype=np.float32,)
             render_masks[done_env_mask] = 0.0
 
-            if render_mode == "rgb_array":
-                # NOTE: This doesn't work for smacv1
+            if self.args.env_name == "smacv2" and render_mode == "rgb_array":
                 # Render and capture frame
-                frame = self.envs.envs[0].render(mode=render_mode)
+                frame = self.envs.render(mode=render_mode, env_id=0)
                 frames.append(frame)
 
             # Update episode stats

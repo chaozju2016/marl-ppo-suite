@@ -1,3 +1,10 @@
+import os
+
+if "MKL_NUM_THREADS" not in os.environ:
+    os.environ["MKL_NUM_THREADS"] = "1"
+if "OMP_NUM_THREADS" not in os.environ:
+    os.environ["OMP_NUM_THREADS"] = "1"
+
 import argparse
 import atexit
 import torch
@@ -35,8 +42,10 @@ def parse_args():
     parser.add_argument("--cuda", action='store_false', default=True,
                         help="by default True, will use GPU to train; or else will use CPU;")
     parser.add_argument("--cuda_deterministic",
-                        action='store_false', default=True,
+                        action='store_true', default=False,
                         help="by default, make sure random seed effective. if set, bypass such function.")
+    parser.add_argument("--torch_threads", type=int, default=None,
+                        help="Number of threads for PyTorch (default: None)")
     parser.add_argument("--max_steps", type=int, default=1000000,
                         help="Number of environment steps to train on")
     parser.add_argument("--n_rollout_threads", type=int, default=8,
@@ -188,11 +197,33 @@ def main():
     print(f"Using {'RNN' if args.use_rnn else 'MLP'} policy")
     print("=============================")
 
+    # Set device and thread configuration centrally
+    device = torch.device("cuda" if args.cuda and torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+    
+    # Set thread configuration
+    if args.torch_threads is not None:
+        torch.set_num_threads(args.torch_threads)
+    else:
+        torch.set_num_threads(1)  # Default to 1 thread if not specified
+    
+    # Set deterministic mode if requested
+    if args.cuda_deterministic:
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        print("Using deterministic CUDA mode")
+
+    # Print thread configuration
+    print(f"Thread settings:")
+    print(f"  OMP_NUM_THREADS: {os.environ.get('OMP_NUM_THREADS', 'Not set')}")
+    print(f"  MKL_NUM_THREADS: {os.environ.get('MKL_NUM_THREADS', 'Not set')}")
+    print(f"  PyTorch threads: {torch.get_num_threads()}")
+
     try:
         if args.algo == "mappo":
-            runner = MAPPORunner(args)
+            runner = MAPPORunner(args, device)
         elif args.algo == "happo":
-            runner = HAPPORunner(args)
+            runner = HAPPORunner(args, device)
         else:
             raise ValueError(f"Invalid algorithm: {args.algo}")
 
