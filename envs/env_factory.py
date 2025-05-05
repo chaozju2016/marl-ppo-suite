@@ -1,8 +1,19 @@
 """
 Environment factory for creating StarCraft 2 environments with various wrappers.
 """
+import platform
+import multiprocessing as mp
 from envs.env_vectorization import SubprocVecEnv, DummyVecEnv
 
+# Configure multiprocessing start method based on platform
+# This is done at module import time to ensure it's set before any MP operations
+if mp.get_start_method(allow_none=True) is None:
+    if platform.system() == "Darwin":  # macOS
+        # On macOS, fork works well with thread limiting
+        mp.set_start_method("forkserver", force=True)
+    else:
+        # On Linux, forkserver is generally safer
+        mp.set_start_method("fork", force=True)
 
 def create_env(args, is_eval=False):
     """
@@ -121,4 +132,16 @@ def make_vec_envs(args, num_processes, is_eval=False):
     if len(envs) == 1:
         return DummyVecEnv(envs)
     else:
+        # Choose the appropriate vectorization method
+        # You can uncomment alternatives if you want to experiment
+        
+        # Option 1: SubprocVecEnv (reliable and now optimized)
         return SubprocVecEnv(envs)
+        
+        # Option 2: SharedMemoryVecEnv (potentially faster but more complex)
+        # from envs.env_shared_memory_vec import SharedMemoryVecEnv
+        # return SharedMemoryVecEnv(envs)
+        
+        # Option 3: RayVecEnv (for distributed training)
+        # from envs.env_ray_vec import RayVecEnv
+        # return RayVecEnv(envs)

@@ -8,6 +8,7 @@ The implementation is based on the HARL codebase but simplified and optimized.
 
 import numpy as np
 from multiprocessing import Process, Pipe
+import multiprocessing as mp
 from abc import ABC, abstractmethod
 import copy
 
@@ -162,7 +163,7 @@ class VecEnv(ABC):
         self.step_async(actions)
         return self.step_wait()
 
-    def render(self, mode="human"):
+    def render(self, mode="human", env_id=None):
         """
         Render the environments.
 
@@ -309,8 +310,13 @@ class SubprocVecEnv(VecEnv):
         self.closed = False
         nenvs = len(env_fns)
 
+        # Check the current start method
+        current_method = mp.get_start_method(allow_none=True)
+        print(f"Current multiprocessing start method: {current_method}")
+
         # Create pipes for communication with subprocesses
-        self.remotes, self.work_remotes = zip(*[Pipe() for _ in range(nenvs)])
+        ctx = mp.get_context()
+        self.remotes, self.work_remotes = zip(*[ctx.Pipe() for _ in range(nenvs)])
 
         # Start subprocesses
         self.ps = [
@@ -412,7 +418,7 @@ class SubprocVecEnv(VecEnv):
             p.join()
         self.closed = True
 
-    def render(self, mode="human"):
+    def render(self, mode="human", env_id=None):
         """
         Render the environments.
 
@@ -423,6 +429,11 @@ class SubprocVecEnv(VecEnv):
             If mode is 'rgb_array', returns the rendered image
             If mode is 'human', returns whether the viewer is open
         """
+        if env_id is not None:
+            self.remotes[env_id].send(("render", mode))
+            if mode == "rgb_array":
+                return self.remotes[env_id].recv()
+    
         for remote in self.remotes:
             remote.send(("render", mode))
             if mode == "rgb_array":
@@ -533,7 +544,7 @@ class DummyVecEnv(VecEnv):
         for env in self.envs:
             env.close()
 
-    def render(self, mode="human"):
+    def render(self, mode="human", env_id=None):
         """
         Render the environments.
 
@@ -544,6 +555,9 @@ class DummyVecEnv(VecEnv):
             If mode is 'rgb_array', returns the rendered images
             If mode is 'human', renders to the screen
         """
+        if env_id is not None:
+            return self.envs[env_id].render(mode=mode)
+        
         if mode == "rgb_array":
             return np.array([env.render(mode=mode) for env in self.envs])
         elif mode == "human":
