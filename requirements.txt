@@ -11,6 +11,7 @@ tqdm
 wandb
 pysc2>=3.0.0
 python-dotenv
+ray
 
 # SMAC environments - these will be installed from GitHub in the Dockerfile
 # git+https://github.com/oxwhirl/smac.git
