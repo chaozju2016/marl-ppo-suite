@@ -202,13 +202,42 @@ For a full list of arguments, run:
 python train.py --help
 ```
 
-### Evaluation
+### Model Evaluation, Rendering, and Downloading
+
+#### Evaluating Trained Models
 
 To evaluate a trained model:
 
 ```bash
-python train.py --algo mappo --env_name smacv1 --map_name 3m --use_eval
+# Evaluate during training
+python train.py --algo mappo --env_name smacv1 --map_name 3m --mode eval
+
+# Evaluate a specific saved model
+python train.py --algo mappo --env_name smacv1 --map_name 3m --mode eval --model path/to/model
 ```
+
+#### Rendering Agent Behavior
+
+To visualize agent behavior:
+
+```bash
+# Render a trained model
+python train.py --algo mappo --env_name smacv1 --map_name 3m --mode render --model path/to/model
+```
+
+#### Downloading Models from Weights & Biases
+
+We provide a utility script to download trained models from Weights & Biases:
+
+```bash
+# Download model from a specific run
+python wandb_download.py --run_id n2x9y78f
+
+# Use the downloaded model (the script will suggest the exact command)
+python train.py --mode eval --config ./artifacts/mappo_smacv1_3m_n2x9y78f/config.json --model ./artifacts/mappo_smacv1_3m_n2x9y78f/best_model
+```
+
+The script organizes downloaded models in folders by algorithm, environment, and map name for easy access.
 
 ### Using Vectorized Environments
 
@@ -330,6 +359,7 @@ mappo/
 ├── utils/                      # Utility functions and classes
 ├── train.py                    # Main training script for vectorized implementations
 ├── light_train.py              # Training script for lightweight implementations
+├── wandb_download.py           # Utility script for downloading models from W&B
 ├── install_smac_linux.sh       # Installation script for Linux
 ├── install_smac_mac.sh         # Installation script for macOS
 ├── environment.yml             # Conda environment specification
