@@ -11,6 +11,8 @@ echo -e "${YELLOW}Making all scripts executable...${NC}"
 chmod +x cloud/train.sh
 chmod +x cloud/train_simple.sh
 chmod +x cloud/test_docker.sh
+chmod +x cloud/build_and_push.sh
 chmod +x cloud/runpods/entrypoint.sh
+chmod +x cloud/examples/docker_examples.sh
 
 echo -e "${GREEN}All scripts are now executable.${NC}"

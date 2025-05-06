@@ -1,6 +1,30 @@
 #!/bin/bash
 # RunPods.io entrypoint script for MARL PPO Suite
+set -e
 
+# helper function  (add near top of entrypoint.sh)
+stop_pod_if_possible () {
+    if command -v runpodctl >/dev/null 2>&1 && [[ -n "$RUNPOD_POD_ID" ]]; then
+        echo "Stopping RunPod pod $RUNPOD_POD_ID ..."
+        runpodctl stop pod "$RUNPOD_POD_ID"
+    else
+        echo "runpodctl not found (local run) – skipping pod stop."
+    fi
+}
+
+# Set up SSH key from RunPod.io PUBLIC_KEY environment variable
+if [ -n "$PUBLIC_KEY" ]; then
+    mkdir -p /root/.ssh
+    echo "$PUBLIC_KEY" > /root/.ssh/authorized_keys
+    chmod 700 /root/.ssh
+    chmod 600 /root/.ssh/authorized_keys
+    echo "SSH public key configured."
+fi
+
+/usr/sbin/sshd -D & # Start SSH server in the background
+
+# trap both Ctrl‑C and platform SIGTERM
+trap 'stop_pod_if_possible; exit 0' SIGINT SIGTERM
 # Set colors for output
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -73,4 +97,7 @@ echo -e "${YELLOW}Training finished. Logs available at runs/training.log${NC}"
 # echo -e "To exit: exit"
 # # Sleep indefinitely to keep container running
 # tail -f /dev/null
+# normal completion
+stop_pod_if_possible 
+
 exit $EXIT_CODE
