@@ -32,12 +32,17 @@ class MAPPORunner:
         self.args = args
         self.device = device
 
+        self.is_train  = args.mode == "train"
+        need_eval = args.mode in ("train", "eval")
+        
         # Create training environment using the factory function
-        if args.render:
-            self.envs = make_vec_envs(args, is_eval=True, num_processes=1)
-        else:
-            self.envs = make_vec_envs(args, is_eval=False, num_processes=args.n_rollout_threads)
-            self.eval_envs = make_vec_envs(args, is_eval=True, num_processes=args.n_eval_rollout_threads)
+        self.envs = make_vec_envs(args, is_eval=not  self.is_train,
+                          num_processes = 1 if args.mode == "render"
+                                         else args.n_rollout_threads)
+
+        if need_eval:
+            self.eval_envs = make_vec_envs(args, is_eval=True,
+                                   num_processes=args.n_eval_rollout_threads)
 
         # Store args for creating evaluation environment later
         self.args = args
@@ -57,7 +62,7 @@ class MAPPORunner:
                             self.envs.action_space,
                             self.device)
 
-        if not args.render:
+        if self.is_train:
 
             # Create buffer
             self.buffer = RolloutStorage(
@@ -135,18 +140,7 @@ class MAPPORunner:
             self.compute_returns()
 
             # Train agent
-            if self.args.show_performance_metrics:
-                train_start_time = time.time()
-                train_info = self.agent.train(self.buffer)
-                train_end_time = time.time()
-                train_duration = train_end_time - train_start_time
-
-                # Log training performance
-                print(f"\nTraining Performance Metrics:")
-                print(f"  Time to train on {self.args.n_steps} steps: {train_duration:.2f} seconds")
-                print(f"  Training time per step: {train_duration/self.args.n_steps*1000:.2f} ms")
-            else:
-                train_info = self.agent.train(self.buffer)
+            train_info = self.agent.train(self.buffer)
 
             # Log training information
             if self.total_steps // self.args.log_interval > log_num:
@@ -203,8 +197,6 @@ class MAPPORunner:
             np.ndarray: Information from the last step of the rollout
         """
         # Start timing for rollout collection if performance metrics are enabled
-        rollout_start_time = time.time() if self.args.show_performance_metrics else None
-
         rollout_data = {
             'episode_lengths': [],
             'episode_rewards': []
@@ -295,20 +287,6 @@ class MAPPORunner:
                 action_log_probs, actor_rnn_states, critic_rnn_states,
             )
             self.insert(data)
-
-        # End timing and calculate statistics if performance metrics are enabled
-        if self.args.show_performance_metrics and rollout_start_time is not None:
-            rollout_end_time = time.time()
-            rollout_duration = rollout_end_time - rollout_start_time
-            steps_per_second = self.args.n_steps * self.args.n_rollout_threads / rollout_duration
-            experiences_per_second = self.args.n_steps * self.args.n_rollout_threads * self.envs.n_agents / rollout_duration
-
-            # Log performance metrics
-            print(f"\nRollout Performance Metrics:")
-            print(f"  Time to collect {self.args.n_steps} steps: {rollout_duration:.2f} seconds")
-            print(f"  Steps per second: {steps_per_second:.2f}")
-            print(f"  Experiences per second: {experiences_per_second:.2f}")
-            print(f"  Number of environments: {self.args.n_rollout_threads}")
 
         return infos, rollout_data
 
@@ -480,17 +458,22 @@ class MAPPORunner:
             )
 
     @torch.no_grad()
-    def evaluate(self, num_episodes=10, capture_video=False):
+    def evaluate(self, num_episodes=10, capture_video=False, model_path=None):
         """
         Evaluate the current policy, using vec envs.
 
         Args:
             num_episodes (int): Number of episodes to evaluate
             capture_video (bool): Whether to capture video of the evaluation
+            model_path (str): Path to the model to evaluate
 
         Returns:
             tuple: (mean_rewards, win_rate)
         """
+        # Load model if provided
+        if model_path is not None:
+            print(f"Loading model from {model_path} for evaluation...")
+            self.agent.load(model_path)
 
         # Evaluation stats
         all_episode_rewards = []
@@ -595,17 +578,20 @@ class MAPPORunner:
         win_rate = np.mean(all_win_rates)
 
         # Log evaluation stats
-        self.logger.add_scalar('eval/rewards', mean_rewards, self.total_steps)
-        self.logger.add_scalar('eval/win_rate', win_rate, self.total_steps)
-        self.logger.add_scalar('eval/length', mean_length, self.total_steps)
-        print(f"{self.total_steps}/{self.args.max_steps} Evaluation: Mean rewards: {mean_rewards:.2f},  Mean length: {mean_length:.2f}, Win rate: {win_rate:.2f}")
+        if self.is_train:
+            self.logger.add_scalar('eval/rewards', mean_rewards, self.total_steps)
+            self.logger.add_scalar('eval/win_rate', win_rate, self.total_steps)
+            self.logger.add_scalar('eval/length', mean_length, self.total_steps)
+            print(f"{self.total_steps}/{self.args.max_steps} Evaluation: Mean rewards: {mean_rewards:.2f},  Mean length: {mean_length:.2f}, Win rate: {win_rate:.2f}")
+        else:
+            print(f"Mean rewards: {mean_rewards:.2f},  Mean length: {mean_length:.2f}, Win rate: {win_rate:.2f}")
 
         if capture_video:
             video = np.stack(frames, axis=0)
             self.logger.add_video("eval/render", video, self.total_steps)
 
         # Update best win rate
-        if win_rate > self.best_win_rate:
+        if self.is_train and win_rate > self.best_win_rate:
             self.best_win_rate = win_rate
             save_path = os.path.join(self.logger.dir_name, f"best-torch.model")
             self.agent.save(save_path)
@@ -740,9 +726,9 @@ class MAPPORunner:
         
         Should be called when training is complete or if an exception occurs.
         """
-        if self.args.render:
-            self.envs.close()
-        else:
-            self.envs.close()
-            self.eval_envs.close()
+        self.envs.close()
+        if self.args.mode == "train":
             self.logger.close()
+        if self.args.mode in ("train", "eval"):
+            self.eval_envs.close()
+            

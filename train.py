@@ -45,7 +45,7 @@ def parse_args():
                         action='store_true', default=False,
                         help="by default, make sure random seed effective. if set, bypass such function.")
     parser.add_argument("--torch_threads", type=int, default=None,
-                        help="Number of threads for PyTorch (default: None)")
+                        help="Set PyTorch/OMP/MKL threads (default None))")
     parser.add_argument("--max_steps", type=int, default=1000000,
                         help="Number of environment steps to train on")
     parser.add_argument("--n_rollout_threads", type=int, default=8,
@@ -157,24 +157,57 @@ def parse_args():
                         help='Track experiment with Weights & Biases (default: False)')
  
     # Rendering parameters
-    parser.add_argument("--render", action="store_true", default=False,
-                        help="Render the environment during evaluation (default: False)")
+    parser.add_argument("--mode", choices=["train", "eval", "render"],
+                    default="train",
+                    help="train (default), eval (no learning), or render")
+    parser.add_argument("--config", type=str, default=None,
+                        help="Path to the configuration file for rendering and evaluation")
+    parser.add_argument("--model", type=str, default=None,
+                        help="Path to the model to render")
     parser.add_argument("--render_episodes", type=int, default=10,
                         help="Number of episodes to render")
-    parser.add_argument("--render_model", type=str, default=None,
-                        help="Path to the model to render")
     parser.add_argument("--render_mode", type=str, default="human", choices=["human", "rgb_array"],
                         help="Render mode: 'human' or 'rgb_array'")
 
-    # Performance monitoring
-    parser.add_argument("--show_performance_metrics", action="store_true", default=False,
-                        help="Show detailed performance metrics during training")
-
     return parser.parse_args()
 
+def load_render_config(args):
+    import json
+    with open(args.config, 'r') as f:
+        config = json.load(f)
+    
+    protected_flags = {
+        'mode': args.mode,
+        'model': args.model,
+        'render_episodes': args.render_episodes,
+        'render_mode': args.render_mode,
+        'eval_episodes': args.eval_episodes,
+        'capture_video': args.capture_video,
+        'n_eval_rollout_threads': args.n_eval_rollout_threads
+        # Add any other flags that should be protected
+    }
+    
+    # Create a copy of the original args
+    original_args_dict = vars(args).copy()
+    
+    # Update with render config
+    original_args_dict.update(config)
+    
+    # Restore protected flags
+    for key, value in protected_flags.items():
+        if value is not None:  # Only restore if the flag was set
+            original_args_dict[key] = value
+    
+    # Create new Namespace with updated values
+    args = argparse.Namespace(**original_args_dict)
+    return args
 
 def main():
     args = parse_args()
+
+    if args.mode in ("eval", "render") and args.config:
+        args = load_render_config(args)
+ 
     runner = None
 
     print("=============================")
@@ -202,10 +235,10 @@ def main():
     print(f"Using device: {device}")
     
     # Set thread configuration
-    if args.torch_threads is not None:
-        torch.set_num_threads(args.torch_threads)
-    else:
-        torch.set_num_threads(1)  # Default to 1 thread if not specified
+    cpu_threads = args.torch_threads or 1
+    torch.set_num_threads(cpu_threads)
+    # os.environ["OMP_NUM_THREADS"]  = str(cpu_threads)
+    # os.environ["MKL_NUM_THREADS"]  = str(cpu_threads)
     
     # Set deterministic mode if requested
     if args.cuda_deterministic:
@@ -227,10 +260,18 @@ def main():
         else:
             raise ValueError(f"Invalid algorithm: {args.algo}")
 
-        if args.render:
-            runner.render(num_episodes=args.render_episodes, model_path=args.render_model, render_mode=args.render_mode)
-        else:
+        if args.mode == "train":
             runner.run()
+        elif args.mode == "eval":
+            runner.evaluate(
+                num_episodes=args.eval_episodes, 
+                capture_video=args.capture_video, 
+                model_path=args.model)
+        else:
+            runner.render(
+                num_episodes=args.render_episodes, 
+                model_path=args.model, 
+                render_mode=args.render_mode)
     except Exception as e:
         print(f"Error during execution: {e}")
         import traceback
