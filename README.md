@@ -41,6 +41,7 @@ The goal is to provide readable and straightforward implementations that researc
 - **HAPPO Implementation**: Heterogeneous-Agent PPO with agent-specific policies
 - **SMACv2 Support**: Integration with the next generation StarCraft Multi-Agent Challenge
 - **Installation Scripts**: Easy setup for StarCraft II and SMAC maps on both Linux and macOS
+- **Thread Optimization**: Automatic setting of environment variables for optimal performance with parallel environments
 
 ## Installation
 
@@ -102,7 +103,8 @@ If you prefer to install manually, follow these steps:
 2. Download SMAC Maps:
 
    ```bash
-   wget https://github.com/oxwhirl/smac/releases/download/v0.1-beta1/SMAC_Maps.zip
+   # SMACv2 maps include all SMACv1 maps, so you only need to download SMACv2 maps
+   wget -q https://github.com/oxwhirl/smacv2/releases/download/maps/SMAC_Maps.zip
    unzip SMAC_Maps.zip -d /path/to/StarCraftII/Maps/
    ```
 
@@ -155,6 +157,25 @@ python light_train.py --algo mappo --map_name 3m
 python light_train.py --algo mappo_rnn --map_name 3m
 ```
 
+### Cloud Deployment
+
+For training on cloud platforms, we provide deployment scripts and configurations in the `cloud` directory:
+
+```bash
+# Build and test Docker image locally
+./cloud/build_and_push.sh --test
+
+# Build with version tag and push to Docker Hub
+./cloud/build_and_push.sh --tag v1.0.0 --test --push
+```
+
+We support two deployment approaches:
+
+1. **Containerized Deployment (RunPods.io)**: Docker-based deployment for GPU cloud platforms
+2. **Standalone Deployment**: Direct installation on any Linux machine (Hetzner, AWS, GCP, etc.)
+
+For detailed instructions, see the [Cloud Deployment Guide](cloud/README.md).
+
 The lightweight implementations (`light_train.py`) are optimized for single-environment training and have a simpler codebase, making them easier to understand and modify. The full implementations (`train.py`) support vectorized environments and more advanced features.
 
 #### Key Arguments
@@ -173,6 +194,7 @@ The lightweight implementations (`light_train.py`) are optimized for single-envi
 - `--reward_norm_type`: Type of reward normalizer (`efficient` or `ema`)
 - `--state_type`: Type of state representation (`FP`, `EP`, or `AS`)
 - `--fixed_order`: Use fixed agent order for HAPPO updates (default: False)
+- `--use_wandb`: Enable Weights & Biases logging (default: False)
 
 For a full list of arguments, run:
 
@@ -200,6 +222,70 @@ python train.py --algo mappo --env_name smacv1 --map_name 3m --n_rollout_threads
 python train.py --algo mappo --env_name smacv1 --map_name 3m --use_eval --n_eval_rollout_threads 4
 ```
 
+### Experiment Tracking with Weights & Biases
+
+The implementation supports Weights & Biases (wandb) for experiment tracking:
+
+```bash
+# Enable wandb logging
+python train.py --algo mappo --env_name smacv1 --map_name 3m --use_wandb
+```
+
+#### Setting Environment Variables
+
+You can set environment variables directly in your terminal:
+
+```bash
+# Set wandb and performance variables
+export WANDB_API_KEY=your_api_key_here
+export WANDB_PROJECT=marl-ppo-suite
+export WANDB_ENTITY=your_username_or_team
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+```
+
+Or create a `.env` file in the project root:
+
+```bash
+# Create .env file
+cat > .env << EOL
+WANDB_API_KEY=your_api_key_here
+WANDB_PROJECT=marl-ppo-suite
+WANDB_ENTITY=your_username_or_team
+OMP_NUM_THREADS=1
+MKL_NUM_THREADS=1
+EOL
+
+# Load environment variables from .env file
+source .env
+```
+
+This allows you to track training progress, compare different runs, and visualize results in the wandb dashboard.
+
+### Performance Optimization
+
+Since StarCraft II is primarily CPU-intensive, the implementation automatically sets the following environment variables to optimize performance when running multiple environments in parallel:
+
+```python
+if "MKL_NUM_THREADS" not in os.environ:
+    os.environ["MKL_NUM_THREADS"] = "1"
+if "OMP_NUM_THREADS" not in os.environ:
+    os.environ["OMP_NUM_THREADS"] = "1"
+```
+
+These settings significantly improve performance when using `SubprocVecEnv` with StarCraft 2 environments by:
+
+1. Preventing thread contention between parallel environments
+2. Reducing overhead in numpy operations (which use MKL and OpenMP internally)
+3. Ensuring each subprocess uses a single thread, avoiding resource competition
+
+This optimization is particularly important for computationally intensive environments like StarCraft 2, where setting these variables can lead to dramatic performance improvements (almost 2.5x speedup) when running multiple environments in parallel.
+
+For optimal performance, you should adjust `n_rollout_threads` based on your CPU core count:
+
+- For 8-core systems: 8-12 threads
+- For 16-core systems: 16-24 threads
+
 ## Project Structure
 
 ```
@@ -213,6 +299,20 @@ mappo/
 │   ├── rollout_storage.py      # Buffer for vectorized implementations
 │   ├── light_rollout_storage.py # Buffer for lightweight MAPPO
 │   └── light_rnn_rollout_storage.py # Buffer for lightweight RNN MAPPO
+├── cloud/                      # Cloud deployment scripts and configurations
+│   ├── train.sh                # Main script for running training on cloud
+│   ├── train_simple.sh         # Simplified script for cloud training
+│   ├── build_and_push.sh       # CI/CD-friendly script for building and pushing Docker images
+│   ├── docker-compose.yml      # Docker Compose configuration
+│   ├── examples/               # Example scripts and configurations
+│   ├── runpods/                # RunPods.io specific files
+│   │   ├── Dockerfile          # Docker configuration for RunPods.io
+│   │   └── entrypoint.sh       # Container entrypoint script
+│   └── standalone/             # Standalone deployment files for any Linux machine
+│       ├── server_setup.sh     # Initial server setup and system dependencies
+│       ├── app_setup.sh        # Repository and environment setup
+│       ├── run_experiments.sh  # Script for running multiple experiments
+│       └── tmux_session.sh     # Script for managing experiments in tmux
 ├── envs/                       # Environment implementations
 │   ├── smacv1/                 # SMACv1 environment
 │   ├── smacv2/                 # SMACv2 environment
@@ -278,6 +378,7 @@ All implementations include the following features and improvements:
 4. **Improved Initialization**: Better weight initialization for more stable training
 5. **Learning Rate Scheduling**: Linear learning rate decay
 6. **Performance Monitoring**: Optional performance measurement for optimization
+7. **Thread Optimization**: Automatic setting of MKL_NUM_THREADS and OMP_NUM_THREADS to 1 for optimal performance with parallel environments
 
 ### Network Architecture
 
