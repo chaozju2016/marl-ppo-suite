@@ -1,5 +1,15 @@
 # Multi-Agent PPO Algorithms
 
+[![MAPPO vs HAPPO SMACv2 Benchmarks](https://img.shields.io/badge/W%26B-Benchmarks-yellow?style=for-the-badge&logo=weightsandbiases)](https://wandb.ai/legalaspro-rl/marl-ppo-suite/reports/MAPPO-vs-HAPPO-SMACv2-Benchmarks---VmlldzoxMjY1NjYwMg)
+
+<p align="center">
+  <img src="./results/zerg_10v10_eval_winrate.png" width="48%" alt="SMACv2 zerg_10_vs_10 Eval Winrate"/>
+  <img src="./results/zerg_5v5_eval_winrate.png" width="48%" alt="SMACv2 zerg_5_vs_5 Eval Winrate"/>
+</p>
+<p align="center">
+  <em>MAPPO vs HAPPO performance comparison on SMACv2 zerg_10_vs_10 (left) and zerg_5_vs_5 (right) maps</em>
+</p>
+
 A collection of clean, documented, and straightforward implementations of PPO-based algorithms for cooperative multi-agent reinforcement learning, with a focus on the [StarCraft Multi-Agent Challenge (SMAC)](https://github.com/oxwhirl/smac) environment. The implementations include MAPPO (Multi-Agent PPO) based on the paper ["The Surprising Effectiveness of PPO in Cooperative Multi-Agent Games"](https://arxiv.org/abs/2103.01955) and HAPPO (Heterogeneous-Agent PPO) based on the paper ["Heterogeneous-Agent Proximal Policy Optimization"](https://jmlr.org/papers/v25/23-0488.html).
 
 Currently implemented:
