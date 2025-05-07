@@ -1,6 +1,6 @@
 # Multi-Agent PPO Algorithms
 
-[![MAPPO vs HAPPO SMACv2 Benchmarks](https://img.shields.io/badge/W%26B-Benchmarks-yellow?style=for-the-badge&logo=weightsandbiases)](https://wandb.ai/legalaspro-rl/marl-ppo-suite/reports/MAPPO-vs-HAPPO-SMACv2-Benchmarks---VmlldzoxMjY1NjYwMg)
+[![MAPPO vs HAPPO SMACv2 Benchmarks](https://img.shields.io/badge/W%26B-Benchmarks-yellow?style=for-the-badge&logo=weightsandbiases)](https://api.wandb.ai/links/legalaspro-rl/agvdrt35)
 
 <p align="center">
   <img src="./results/zerg_10v10_eval_winrate.png" width="48%" alt="SMACv2 zerg_10_vs_10 Eval Winrate"/>
