@@ -78,7 +78,7 @@ EXPERIMENTS=(
      --use_rnn \
      --capture_video \
      --capture_video_interval 200000 \
-     --use_wandb|zerg_5_vs_5_happo"
+     --use_wandb|zerg_5_vs_5_happo",
 
     "--algo mappo \
      --env_name smacv2 \
@@ -94,7 +94,7 @@ EXPERIMENTS=(
      --use_rnn \
      --capture_video \
      --capture_video_interval 200000 \
-     --use_wandb|terran_5_vs_5_mappo"
+     --use_wandb|terran_5_vs_5_mappo",
 
     "--algo happo \
      --env_name smacv2 \
