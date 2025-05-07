@@ -12,17 +12,25 @@ from gymnasium.spaces import Box, Discrete
 
 
 class SMACv2Env:
-    def __init__(self, args):
+    def __init__(self, args, seed=None):
         """
         Initialize the SMACv2 environment.
 
         Args:
             args (dict): Dictionary containing environment configuration parameters
+            seed (int, optional): Random seed for the environment. Defaults to None.
         """
 
         self.map_config = self._load_map_config(args.map_name)
         self.use_agent_id = args.use_agent_id
         self.use_death_masking = args.use_death_masking
+
+        # Store seed if provided
+        self._seed = args.seed
+        if self._seed is None:
+            raise ValueError("SMACv2Env requires a seed to be set.")
+
+        self.map_config['seed'] = self._seed
 
         self.env = StarCraftCapabilityEnvWrapper(**self.map_config)
 
@@ -154,7 +162,7 @@ class SMACv2Env:
 
     def render(self, mode="human"):
         return self.env.render(mode=mode)
-    
+
     def save_replay(self):
         self.env.save_replay()
 

@@ -6,11 +6,11 @@ if "OMP_NUM_THREADS" not in os.environ:
     os.environ["OMP_NUM_THREADS"] = "1"
 
 import argparse
-import atexit
 import torch
 
 from runners.mappo_runner import MAPPORunner
 from runners.happo_runner import HAPPORunner
+from utils.env_tools import set_global_seeds
 from utils.sc2_utils import kill_sc2_processes
 
 # Register cleanup function to kill SC2 processes on exit
@@ -42,7 +42,7 @@ def parse_args():
     parser.add_argument("--cuda", action='store_false', default=True,
                         help="by default True, will use GPU to train; or else will use CPU;")
     parser.add_argument("--cuda_deterministic",
-                        action='store_true', default=False,
+                        action='store_false', default=True,
                         help="by default, make sure random seed effective. if set, bypass such function.")
     parser.add_argument("--torch_threads", type=int, default=None,
                         help="Set PyTorch/OMP/MKL threads (default None))")
@@ -60,7 +60,7 @@ def parse_args():
     parser.add_argument("--map_name", type=str, default="3m",
                         help="Which SMAC map to run on")
 
-    # State parameters 
+    # State parameters
     parser.add_argument("--state_type", type=str, default="EP", choices=["FP", "EP", "AS"],
         help="Type of state to use in critic: 'FP' (Feature Pruned AS - only Smacv1) or "
         "'EP' (Environment Provided) or 'AS' (Agent-Specific - observation + state / not implemented)")
@@ -153,9 +153,9 @@ def parse_args():
                     help="Capture video every capture_video_interval steps (~30 rollouts 8 envs 400 steps))")
 
     # Wandb parameters
-    parser.add_argument('--use_wandb', action='store_true', 
+    parser.add_argument('--use_wandb', action='store_true',
                         help='Track experiment with Weights & Biases (default: False)')
- 
+
     # Rendering parameters
     parser.add_argument("--mode", choices=["train", "eval", "render"],
                     default="train",
@@ -175,7 +175,7 @@ def load_render_config(args):
     import json
     with open(args.config, 'r') as f:
         config = json.load(f)
-    
+
     protected_flags = {
         'mode': args.mode,
         'model': args.model,
@@ -186,18 +186,18 @@ def load_render_config(args):
         'n_eval_rollout_threads': args.n_eval_rollout_threads
         # Add any other flags that should be protected
     }
-    
+
     # Create a copy of the original args
     original_args_dict = vars(args).copy()
-    
+
     # Update with render config
     original_args_dict.update(config)
-    
+
     # Restore protected flags
     for key, value in protected_flags.items():
         if value is not None:  # Only restore if the flag was set
             original_args_dict[key] = value
-    
+
     # Create new Namespace with updated values
     args = argparse.Namespace(**original_args_dict)
     return args
@@ -207,7 +207,7 @@ def main():
 
     if args.mode in ("eval", "render") and args.config:
         args = load_render_config(args)
- 
+
     runner = None
 
     print("=============================")
@@ -233,18 +233,15 @@ def main():
     # Set device and thread configuration centrally
     device = torch.device("cuda" if args.cuda and torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    
+
     # Set thread configuration
     cpu_threads = args.torch_threads or 1
     torch.set_num_threads(cpu_threads)
     # os.environ["OMP_NUM_THREADS"]  = str(cpu_threads)
     # os.environ["MKL_NUM_THREADS"]  = str(cpu_threads)
-    
-    # Set deterministic mode if requested
-    if args.cuda_deterministic:
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-        print("Using deterministic CUDA mode")
+
+    # Set global seeds and deterministic mode
+    set_global_seeds(args.seed, deterministic_cuda=args.cuda_deterministic)
 
     # Print thread configuration
     print(f"Thread settings:")
@@ -264,13 +261,13 @@ def main():
             runner.run()
         elif args.mode == "eval":
             runner.evaluate(
-                num_episodes=args.eval_episodes, 
-                capture_video=args.capture_video, 
+                num_episodes=args.eval_episodes,
+                capture_video=args.capture_video,
                 model_path=args.model)
         else:
             runner.render(
-                num_episodes=args.render_episodes, 
-                model_path=args.model, 
+                num_episodes=args.render_episodes,
+                model_path=args.model,
                 render_mode=args.render_mode)
     except Exception as e:
         print(f"Error during execution: {e}")
@@ -293,4 +290,3 @@ if __name__ == "__main__":
 
 
 
- 

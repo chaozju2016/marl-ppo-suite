@@ -3,6 +3,9 @@ Environment factory for creating StarCraft 2 environments with various wrappers.
 """
 import platform
 import multiprocessing as mp
+import random
+import numpy as np
+import torch
 from envs.env_vectorization import SubprocVecEnv, DummyVecEnv
 
 # Configure multiprocessing start method based on platform
@@ -46,20 +49,29 @@ def create_env(args, is_eval=False):
     return env
 
 
-def make_env(args, rank=None, is_eval=False):
+def make_env(args, base_seed, rank, is_eval=False):
     """
     Helper function to create an environment with a given seed.
 
     Args:
         args: Arguments object containing environment configuration
-        rank: Environment rank (for seeding, currently unused)
+        base_seed: Base seed for all environments
+        rank: Environment rank (for seeding)
         is_eval: Whether this is an evaluation environment
 
     Returns:
         A function that creates the environment when called
     """
+    # Calculate a unique seed for this environment
+    env_seed = base_seed + rank * 10000
+
     def _thunk():
-        
+
+        random.seed(env_seed)             # only affects this process
+        np.random.seed(env_seed)
+        torch.manual_seed(env_seed)
+        # print(f"Creating environment with seed: {env_seed} (rank {rank})")
+
         env_name = args.env_name
 
         if env_name == "smacv1":
@@ -68,7 +80,7 @@ def make_env(args, rank=None, is_eval=False):
                 from smac.env import StarCraft2Env
                 from envs.wrappers import FeaturePrunedStateWrapper
 
-                env = StarCraft2Env(map_name=args.map_name)
+                env = StarCraft2Env(map_name=args.map_name, seed=env_seed)
 
                 env = FeaturePrunedStateWrapper(
                     env,
@@ -81,31 +93,30 @@ def make_env(args, rank=None, is_eval=False):
                     use_mustalive=args.use_mustalive,
                     use_agent_id=args.use_agent_id
                 )
-            else: 
+            else:
                 # New Version using SMACv1Env.
                 from envs.smacv1.Starcraft2_Env import StarCraft2Env as SMACv1Env
 
                 env = SMACv1Env(
                     map_name=args.map_name,
-                    state_type= args.state_type
+                    state_type=args.state_type,
+                    seed=env_seed
                 )
         elif env_name == "smacv2":
             from envs.smacv2 import SMACv2Env
-            
-            import random
+
             _orig_shuffle = random.shuffle
 
             def _patched_shuffle(seq, *args, **kwargs):
                 # drop any extra positional args, but pass through a keyword "random" if given
                 if args:
-                    # args[0] is the old “random” function pysc2 passed; 
+                    # args[0] is the old “random” function pysc2 passed;
                     # shuffle() will call random() from the module if no keyword is provided.
                     return _orig_shuffle(seq, **kwargs)
                 return _orig_shuffle(seq, **kwargs)
 
             random.shuffle = _patched_shuffle
-            
-            env = SMACv2Env(args)
+            env = SMACv2Env(args, seed=env_seed)
         else:
             raise ValueError(f"Unknown environment name: {env_name}")
 
@@ -125,8 +136,10 @@ def make_vec_envs(args, num_processes, is_eval=False):
     Returns:
         Vectorized environments
     """
+    # eval envs have a different base seed,
+    base_seed = args.seed + 1000000 if is_eval else args.seed
     # Create environment thunks
-    envs = [make_env(args, i, is_eval=is_eval) for i in range(num_processes)]
+    envs = [make_env(args, base_seed, rank=i, is_eval=is_eval) for i in range(num_processes)]
 
     # If only one environment, use DummyVecEnv for simplicity
     if len(envs) == 1:
@@ -134,14 +147,14 @@ def make_vec_envs(args, num_processes, is_eval=False):
     else:
         # Choose the appropriate vectorization method
         # You can uncomment alternatives if you want to experiment
-        
+
         # Option 1: SubprocVecEnv (reliable and now optimized)
         return SubprocVecEnv(envs)
-        
+
         # Option 2: SharedMemoryVecEnv (potentially faster but more complex)
         # from envs.env_shared_memory_vec import SharedMemoryVecEnv
         # return SharedMemoryVecEnv(envs)
-        
+
         # Option 3: RayVecEnv (for distributed training)
         # from envs.env_ray_vec import RayVecEnv
         # return RayVecEnv(envs)

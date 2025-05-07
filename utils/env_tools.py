@@ -1,3 +1,5 @@
+import os, random, numpy as np, torch
+
 def get_shape_from_obs_space(obs_space):
     """Get shape from observation space.
     Args:
@@ -30,3 +32,16 @@ def get_shape_from_act_space(act_space):
     elif act_space.__class__.__name__ == "MultiBinary":
         act_shape = act_space.shape[0]
     return act_shape
+
+def set_global_seeds(seed: int, deterministic_cuda: bool = False):
+    """Seed Python, NumPy & Torch in *this* process."""
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+    if deterministic_cuda:
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        torch.backends.cudnn.benchmark = False
