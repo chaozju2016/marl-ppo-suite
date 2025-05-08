@@ -480,6 +480,7 @@ class MAPPORunner:
         all_episode_lengths = []
         all_win_rates = []
         current_episode = 0
+        capture_episodes = 0
 
         frames = [] if capture_video else None  # For video capture
         obs, _, available_actions = self.eval_envs.reset()
@@ -551,7 +552,7 @@ class MAPPORunner:
             )
             eval_masks[done_env_mask] = 0.0
 
-            if capture_video and current_episode <= 3:
+            if capture_video and capture_episodes <= 3:
                 # Render and capture frame of first 3 episodes
                 frame = self.eval_envs.render(mode="rgb_array", env_id=0)
                 frames.append(frame)
@@ -564,6 +565,8 @@ class MAPPORunner:
                     episode_rewards[i] = 0
                     episode_length[i] = 0
                     current_episode += 1
+                    if i == 0:
+                        capture_episodes += 1
                     # Check if episode was won
                     all_win_rates.append(infos[i]["battle_won"])
 
