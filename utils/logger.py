@@ -64,6 +64,8 @@ class Logger:
         if self.save_csv:
             self._data = {}  # {step: {key: val, ...}, ...} for CSV logging
         
+        tb_glob = os.path.join(self.dir_name, "**", "events.out.tfevents.*")
+        
         self.use_wandb = use_wandb and (wandb is not None) # Ensure wandb is imported
         if self.use_wandb:
             display_name = f"{algo}_{run_name}"  # e.g., "MAPPO_lr0.0005_nenvs4..."
@@ -84,6 +86,9 @@ class Logger:
                 sync_tensorboard=False, # one-line TB-sync
                 resume="allow"  # Allow resuming if needed
             )
+
+            # stream during training if file expected to be less then 50 MB
+            wandb.save(tb_glob, base_path=".", policy="live")  
 
             self._last_model_version = {}
         
@@ -312,6 +317,9 @@ class Logger:
         """Close the TensorBoard writer and save CSV."""
         self.writer.close()
         if self.use_wandb:
+            # Use this logic if file expected to be > 50 MB
+            # tb_glob = os.path.join(self.dir_name, "**", "events.out.tfevents.*")
+            # wandb.save(tb_glob, base_path=".", policy="now")
             self.wb.finish()
         if self.save_csv:
             self.save2csv()
