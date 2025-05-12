@@ -52,7 +52,6 @@ class Logger:
         self.run_name = run_name
         self.dir_name = os.path.join(runs_root, env, algo, run_name)
         os.makedirs(self.dir_name, exist_ok=True)
-
         self.writer = SummaryWriter(self.dir_name)
         self.name_to_values = {}  # Stores deque of recent values for smoothing
         self.current_env_step = 0
@@ -63,9 +62,7 @@ class Logger:
 
         if self.save_csv:
             self._data = {}  # {step: {key: val, ...}, ...} for CSV logging
-        
-        tb_glob = os.path.join(self.dir_name, "**", "events.out.tfevents.*")
-        
+            
         self.use_wandb = use_wandb and (wandb is not None) # Ensure wandb is imported
         if self.use_wandb:
             display_name = f"{algo}_{run_name}"  # e.g., "MAPPO_lr0.0005_nenvs4..."
@@ -86,9 +83,6 @@ class Logger:
                 sync_tensorboard=False, # one-line TB-sync
                 resume="allow"  # Allow resuming if needed
             )
-
-            # stream during training if file expected to be less then 50 MB
-            wandb.save(tb_glob, base_path=".", policy="live")  
 
             self._last_model_version = {}
         
@@ -318,8 +312,8 @@ class Logger:
         self.writer.close()
         if self.use_wandb:
             # Use this logic if file expected to be > 50 MB
-            # tb_glob = os.path.join(self.dir_name, "**", "events.out.tfevents.*")
-            # wandb.save(tb_glob, base_path=".", policy="now")
+            tb_glob = os.path.join(self.dir_name, "events.out.tfevents.*")
+            wandb.save(tb_glob, base_path=self.dir_name, policy="now")
             self.wb.finish()
         if self.save_csv:
             self.save2csv()

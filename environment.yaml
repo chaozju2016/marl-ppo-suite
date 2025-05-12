@@ -26,3 +26,4 @@ dependencies:
       - wandb # Optional: Weights & Biases often installed via pip
       - python-dotenv
       - ray
+      - huggingface_hub
