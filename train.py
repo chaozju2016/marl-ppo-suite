@@ -263,7 +263,10 @@ def main():
             runner.evaluate(
                 num_episodes=args.eval_episodes,
                 capture_video=args.capture_video,
-                model_path=args.model)
+                model_path=args.model,
+                map_name=args.map_name,
+                algo_name=args.algo,
+            )
         else:
             runner.render(
                 num_episodes=args.render_episodes,
@@ -277,7 +280,7 @@ def main():
         # Clean up environments even if an error occurs
         if runner is not None:
             try:
-               runner.close()
+                runner.close()
             except Exception as e:
                 print(f"Error closing environments: {e}")
 
@@ -287,6 +290,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
