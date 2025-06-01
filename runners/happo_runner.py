@@ -1,10 +1,12 @@
-
 """HAPPO runner."""
 import os
 import time
 import imageio
 import numpy as np
 import torch
+import copy
+import pickle as pkl
+import tqdm
 
 from buffers.rollout_storage import RolloutStorage
 from envs import make_vec_envs
@@ -36,7 +38,7 @@ class HAPPORunner:
 
         self.is_train  = args.mode == "train"
         need_eval = args.mode in ("train", "eval")
-        
+
         # Create training environment using the factory function
         self.envs = make_vec_envs(args, is_eval=not  self.is_train,
                           num_processes = 1 if args.mode == "render"
@@ -45,7 +47,7 @@ class HAPPORunner:
         if need_eval:
             self.eval_envs = make_vec_envs(args, is_eval=True,
                                    num_processes=args.n_eval_rollout_threads)
-        
+
         # Store args for creating evaluation environment later
         self.args = args
         self.args.n_agents = self.envs.n_agents
@@ -236,7 +238,7 @@ class HAPPORunner:
             actions = actions_t.cpu().numpy()
             action_log_probs = action_log_probs_t.cpu().numpy()
             actor_rnn_states = actor_rnn_states_t.cpu().numpy() if self.args.use_rnn else None
-            
+
             # Reshape values and critic_rnn_states
             shape = (self.args.n_rollout_threads, self.envs.n_agents)
             values = unflatten_first_dim(values_t, shape).cpu().numpy()
@@ -444,14 +446,21 @@ class HAPPORunner:
             for key, value in agent_train_infos[agent_id].items():
                 agent_k = "train/agent%i/" % agent_id + key
                 self.logger.add_scalar(agent_k, value, current_step)
-        
+
         # Log critic
         for key, value in critic_train_info.items():
             critic_k = "train/critic/" + key
             self.logger.add_scalar(critic_k, value, current_step)
 
     @torch.no_grad()
-    def evaluate(self, num_episodes=10, capture_video=False, model_path=None):
+    def evaluate(
+        self,
+        num_episodes=10,
+        capture_video=False,
+        model_path=None,
+        map_name: str = None,
+        algo_name: str = "happo",
+    ):
         """
         Evaluate the current policy, using vec envs.
 
@@ -459,6 +468,8 @@ class HAPPORunner:
             num_episodes (int): Number of episodes to evaluate
             capture_video (bool): Whether to capture video of the evaluation
             model_path (str): Path to the model to evaluate
+            map_name (str): Name of the map being evaluated
+            algo_name (str): Name of the algorithm
 
         Returns:
             tuple: (mean_rewards, win_rate)
@@ -476,7 +487,7 @@ class HAPPORunner:
         capture_episodes = 0
 
         frames = [] if capture_video else None  # For video capture
-        obs, _, available_actions = self.eval_envs.reset()
+        obs, state, available_actions = self.eval_envs.reset()
 
         # Episode tracking
         episode_rewards = np.zeros((self.args.n_eval_rollout_threads), dtype=np.float32)
@@ -500,8 +511,47 @@ class HAPPORunner:
             (self.args.n_eval_rollout_threads, self.eval_envs.n_agents, 1),
             dtype=np.float32)
 
+        # pkl data
+        progress_bar = tqdm.tqdm(
+            total=num_episodes,
+            desc=f"Evaluating {map_name} with {self.args.n_eval_rollout_threads} threads",
+        )
+        pkl_data = []
+        _episode_pkl_data = {
+            "actions": torch.Tensor([]),
+            "rewards": torch.Tensor([]),
+            "observations": torch.Tensor([]),
+            "state": torch.Tensor([]),
+            "legals": torch.Tensor([]),
+        }
+        episode_pkl_data = [
+            copy.deepcopy(_episode_pkl_data) for _ in range(self.args.n_eval_rollout_threads)
+        ]
+
         while True:
-            
+            for i in range(self.args.n_eval_rollout_threads):
+                episode_pkl_data[i]["observations"] = torch.cat(
+                    [
+                        episode_pkl_data[i]["observations"],
+                        to_tensor(obs[i], device=self.device, copy=True).unsqueeze(0),
+                    ],
+                    dim=0,
+                )
+                episode_pkl_data[i]["state"] = torch.cat(
+                    [
+                        episode_pkl_data[i]["state"],
+                        to_tensor(state[i], device=self.device, copy=True).unsqueeze(0),
+                    ],
+                    dim=0,
+                )
+                episode_pkl_data[i]["legals"] = torch.cat(
+                    [
+                        episode_pkl_data[i]["legals"],
+                        to_tensor(available_actions[i], device=self.device, copy=True).unsqueeze(0),
+                    ],
+                    dim=0,
+                )
+
             # Get actions
             actions_t, _, eval_rnn_states_t = self.agent.get_actions(
                 to_tensor(obs, device=self.device, copy=True),
@@ -516,7 +566,23 @@ class HAPPORunner:
             eval_rnn_states = eval_rnn_states_t.cpu().numpy() if self.args.use_rnn else None
 
             # Execute actions in environment
-            obs, share_obs, rewards, dones, infos, available_actions = self.eval_envs.step(actions)
+            obs, state, rewards, dones, infos, available_actions = self.eval_envs.step(actions)
+
+            for i in range(self.args.n_eval_rollout_threads):
+                episode_pkl_data[i]["actions"] = torch.cat(
+                    [
+                        episode_pkl_data[i]["actions"],
+                        to_tensor(actions[i], device=self.device, copy=True).transpose(0, 1),
+                    ],
+                    dim=0,
+                )
+                episode_pkl_data[i]["rewards"] = torch.cat(
+                    [
+                        episode_pkl_data[i]["rewards"],
+                        to_tensor(rewards[i], device=self.device, copy=True).transpose(0, 1),
+                    ],
+                    dim=0,
+                )
 
             # Update episode stats
             episode_rewards += rewards[:, 0, 0]
@@ -543,6 +609,7 @@ class HAPPORunner:
             # Update episode stats
             for i in range(self.args.n_eval_rollout_threads):
                 if done_envs[i]:
+                    # print("=" * 20, f"Thread {i} done!", "=" * 20)
                     all_episode_rewards.append(episode_rewards[i])
                     all_episode_lengths.append(episode_length[i])
                     episode_rewards[i] = 0
@@ -553,6 +620,11 @@ class HAPPORunner:
                     # Check if episode was won
                     all_win_rates.append(infos[i]["battle_won"])
 
+                    progress_bar.update(1)
+                    pkl_data.append(copy.deepcopy(episode_pkl_data[i]))
+                    for k, v in episode_pkl_data[i].items():
+                        # print(f"Episode {current_episode} Buffer {i} {k}: {v.shape}")
+                        episode_pkl_data[i][k] = torch.Tensor([])
 
             if current_episode >= num_episodes:
                 break
@@ -590,8 +662,18 @@ class HAPPORunner:
             )
             print(f"Saved best model with win rate {win_rate:.2f}")
 
+        pkl_file_dir = "/mnt/HDD/wangchao/smac_v2/"
+        os.makedirs(pkl_file_dir, exist_ok=True)
+        pkl_save_path = os.path.join(pkl_file_dir, f"{map_name}_{algo_name}.pkl")
+        # Save evaluation data to pkl file
+        pkl.dump(pkl_data, open(pkl_save_path, "wb"))
+        print("=" * 50)
+        print(
+            f"Evaluation completed: {current_episode} episodes, {np.sum(all_episode_lengths)} steps"
+        )
+        print(f"Evaluation data saved to {pkl_save_path}")
+
         return mean_rewards, win_rate
-    
 
     @torch.no_grad()
     def render(self, model_path=None, num_episodes=10, render_mode="human"):
@@ -622,7 +704,7 @@ class HAPPORunner:
                 dtype=np.float32)
         else:
             render_rnn_states = None
-        
+
         # Initialize masks
         render_masks = np.ones((1, self.envs.n_agents, 1), dtype=np.float32)
 
@@ -631,7 +713,7 @@ class HAPPORunner:
         episode = 0
 
         frames = [] if render_mode == "rgb_array" else None
-        
+
         # Render loop
         while True:
             # Get actions
@@ -678,7 +760,7 @@ class HAPPORunner:
                 episode += 1
                 if episode >= num_episodes:
                     break
-        
+
         if render_mode == "rgb_array":
             save_video(frames, self.args.env_name, self.args.map_name, self.args.algo)
 
