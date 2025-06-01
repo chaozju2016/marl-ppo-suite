@@ -581,7 +581,7 @@ class MAPPORunner:
             ) if self.args.use_rnn else None
 
             # Execute actions in environment
-            obs, share_obs, rewards, dones, infos, available_actions = self.eval_envs.step(actions)
+            obs, state, rewards, dones, infos, available_actions = self.eval_envs.step(actions)
 
             for i in range(self.args.n_eval_rollout_threads):
                 episode_pkl_data[i]["actions"] = torch.cat(
